@@ -149,3 +149,15 @@ func (ds *DiskStorage) RemoveBlobs(blobs []blob.Ref) error {
 	}
 	return nil
 }
+
+func (ds *DiskStorage) PutSalt(salt []byte) error {
+	return local.PutSalt(salt, ds.root)
+}
+
+func (ds *DiskStorage) GetSalt() ([]byte, error) {
+	return local.GetSalt(ds.root)
+}
+
+func (ds *DiskStorage) HasSalt() (bool, error) {
+	return local.HasSalt(ds.root)
+}
