@@ -18,6 +18,7 @@ package schema
 
 import (
 	"encoding/json"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -409,5 +410,80 @@ func TestIssue305(t *testing.T) {
 	out := bb.Blob()
 	if got := out.BlobRef(); got != inref {
 		t.Errorf("cloned ref = %v; want %v", got, inref)
+	}
+}
+
+func TestStaticFileAndStaticSymlink(t *testing.T) {
+	fd, err := ioutil.TempFile("", "schema-test-")
+	if err != nil {
+		t.Fatalf("io.TempFile(): %v", err)
+	}
+	defer os.Remove(fd.Name())
+	defer fd.Close()
+
+	fi, err := os.Lstat(fd.Name())
+	if err != nil {
+		t.Fatalf("os.Lstat(): %v", err)
+	}
+
+	bb := NewCommonFileMap(fd.Name(), fi)
+	bb = bb.SetType("file")
+	bb = bb.SetFileName(fd.Name())
+	blob := bb.Blob()
+
+	sf, ok := blob.AsStaticFile()
+	if !ok {
+		t.Fatalf("Blob.AsStaticFile(): Unexpected return value: false")
+	}
+	expectedStr := filepath.Base(fd.Name())
+	gotStr := sf.FileName()
+	if expectedStr != gotStr {
+		t.Fatalf("StaticFile.FileName(): Expected %s, got %s",
+			expectedStr, gotStr)
+	}
+
+	_, ok = sf.AsStaticSymlink()
+	if ok {
+		t.Fatalf("StaticFile.AsStaticSymlink(): Unexpected return value: true")
+	}
+
+	dir, err := ioutil.TempDir("", "schema-test-")
+	if err != nil {
+		t.Fatalf("ioutil.TempDir(): %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	target := "bar"
+	src := filepath.Join(dir, "foo")
+	err = os.Symlink(target, src)
+	fi, err = os.Lstat(src)
+	if err != nil {
+		t.Fatalf("os.Lstat():  %v", err)
+	}
+
+	bb = NewCommonFileMap(src, fi)
+	bb = bb.SetType("symlink")
+	bb = bb.SetFileName(src)
+	bb = bb.SetSymlinkTarget(target)
+	blob = bb.Blob()
+
+	sf, ok = blob.AsStaticFile()
+	if !ok {
+		t.Fatalf("Blob.AsStaticFile(): Unexpected return value: false")
+	}
+	sl, ok := sf.AsStaticSymlink()
+	if !ok {
+		t.Fatalf("StaticFile.AsStaticSymlink(): Unexpected return value: false")
+	}
+	expectedStr = filepath.Base(src)
+	gotStr = sl.FileName()
+	if expectedStr != gotStr {
+		t.Fatalf("StaticSymlink.FileName(): Expected %s, got %s",
+			expectedStr, gotStr)
+	}
+	expectedStr = target
+	gotStr = sl.SymlinkTargetString()
+	if expectedStr != gotStr {
+		t.Fatalf("StaticSymlink.SymlinkTargetString(): Expected %s, got %s", expectedStr, gotStr)
 	}
 }
