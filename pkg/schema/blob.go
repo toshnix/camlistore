@@ -80,6 +80,13 @@ func (b *Blob) PartsSize() int64 {
 	return n
 }
 
+// SymlinkTargetString returns the field symlinkTarget if it is
+// non-empty. Otherwise, it returns the contents of symlinkTargetBytes
+// as a string.
+func (b *Blob) SymlinkTargetString() string {
+	return b.ss.SymlinkTargetString()
+}
+
 // FileName returns the file, directory, or symlink's filename, or the empty string.
 // TODO: move this off *Blob to a specialized type.
 func (b *Blob) FileName() string {

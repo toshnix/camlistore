@@ -283,6 +283,27 @@ func smartFetch(src blob.StreamingFetcher, targ string, br blob.Ref) error {
 			log.Print(err)
 		}
 		return nil
+	case "symlink":
+		name := filepath.Join(targ, b.FileName())
+		if _, err := os.Lstat(name); err == nil {
+			if *flagVerbose {
+				log.Printf("Skipping creating symbolic link %s: A file with that name exists", name)
+			}
+			return nil
+		}
+
+		target := b.SymlinkTargetString()
+		if target == "" {
+			return errors.New("symlink without target")
+		}
+
+		err := os.Symlink(target, name)
+		// We won't call setFileMeta for a symlink because:
+		// the permissions of a symlink do not matter and Go's
+		// os.Chtimes always dereferences (does not act on the
+		// symlink but its target).
+		return err
+
 	default:
 		return errors.New("unknown blob type: " + b.Type())
 	}
