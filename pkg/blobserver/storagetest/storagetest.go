@@ -18,6 +18,8 @@ limitations under the License.
 package storagetest
 
 import (
+	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -141,6 +143,14 @@ func Test(t *testing.T, fn func(*testing.T) (sto blobserver.Storage, cleanup fun
 			t.Fatalf("RemoveBlob %s: %v", b1, err)
 		}
 	}
+
+	salter, ok := sto.(blobserver.Salter)
+	if ok {
+		t.Logf("Testing Salter Implementation")
+		testSalter(t, salter)
+	} else {
+		t.Logf("Storage does not implement blobserver.Salter. Skipping testSalter()")
+	}
 }
 
 func testSizedBlob(t *testing.T, r io.Reader, b1 blob.Ref, size int64) {
@@ -249,4 +259,41 @@ func testStat(t *testing.T, enum <-chan blob.SizedRef, want []blob.SizedRef) {
 			break
 		}
 	}
+}
+
+func testSalter(t *testing.T, salter blobserver.Salter) {
+	ok, err := salter.HasSalt()
+	if err != nil {
+		t.Errorf("blobserver.Salter.HasSalt(): %v", err)
+		return
+	}
+	if ok {
+		t.Errorf("blobserver.Salter.HasSalt(): Expected false, got true")
+		return
+	}
+
+	data := "a967b8de7868db4513fbfd4eb9ce331f"
+	salt, err := hex.DecodeString(data)
+	if err != nil {
+		t.Errorf("hex.DecodeString(): %v", err)
+		return
+	}
+
+	err = salter.PutSalt(salt)
+	if err != nil {
+		t.Errorf("blobserver.Salter.PutSalt(): %v", err)
+		return
+	}
+
+	got, err := salter.GetSalt()
+	if err != nil {
+		t.Errorf("blobserver.Salter.GetSalt(): %v", err)
+		return
+	}
+
+	if !bytes.Equal(salt, got) {
+		t.Errorf("blobserver.Salter.GetSalt(): Got salt different from put salt: Put %+v, Got: %+v", salt, got)
+		return
+	}
+
 }
