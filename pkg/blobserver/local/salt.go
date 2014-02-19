@@ -21,9 +21,11 @@ Package local implements functionality common to both the "localdisk" and
 package local
 
 import (
+	"encoding/hex"
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // The file containing the salt for scrypt will be named this in the
@@ -42,7 +44,7 @@ func PutSalt(salt []byte, dirRoot string) error {
 	}
 	defer tmpFile.Close()
 
-	_, err = tmpFile.Write(salt)
+	_, err = tmpFile.WriteString(hex.EncodeToString(salt) + "\n")
 	if err != nil {
 		return err
 	}
@@ -64,7 +66,17 @@ func PutSalt(salt []byte, dirRoot string) error {
 func GetSalt(dirRoot string) ([]byte, error) {
 	fname := filepath.Join(dirRoot, SaltFileName)
 
-	return ioutil.ReadFile(fname)
+	data, err := ioutil.ReadFile(fname)
+	if err != nil {
+		return nil, err
+	}
+	bin, err := hex.DecodeString(strings.TrimSpace(string(data)))
+	if err != nil {
+		return nil, err
+	}
+
+	return bin, nil
+
 }
 
 //Implements HasSalt in the blobserver.Salter interface.
