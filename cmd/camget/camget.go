@@ -284,15 +284,22 @@ func smartFetch(src blob.StreamingFetcher, targ string, br blob.Ref) error {
 		}
 		return nil
 	case "symlink":
-		name := filepath.Join(targ, b.FileName())
+		sf, ok := b.AsStaticFile()
+		if !ok {
+			return errors.New("blob is not a static file")
+		}
+		sl, ok := sf.AsStaticSymlink()
+		if !ok {
+			return errors.New("blob is not a symlink")
+		}
+		name := filepath.Join(targ, sl.FileName())
 		if _, err := os.Lstat(name); err == nil {
 			if *flagVerbose {
 				log.Printf("Skipping creating symbolic link %s: A file with that name exists", name)
 			}
 			return nil
 		}
-
-		target := b.SymlinkTargetString()
+		target := sl.SymlinkTargetString()
 		if target == "" {
 			return errors.New("symlink without target")
 		}
