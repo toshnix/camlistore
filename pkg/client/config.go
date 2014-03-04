@@ -28,6 +28,7 @@ import (
 
 	"camlistore.org/pkg/auth"
 	"camlistore.org/pkg/blob"
+	"camlistore.org/pkg/buildinfo"
 	"camlistore.org/pkg/client/android"
 	"camlistore.org/pkg/jsonconfig"
 	"camlistore.org/pkg/jsonsign"
@@ -46,7 +47,10 @@ var (
 )
 
 func AddFlags() {
-	defaultPath := osutil.UserClientConfigPath()
+	defaultPath := "/x/y/z/we're/in-a-test"
+	if !buildinfo.TestingLinked() {
+		defaultPath = osutil.UserClientConfigPath()
+	}
 	flag.StringVar(&flagServer, "server", "", "Camlistore server prefix. If blank, the default from the \"server\" field of "+defaultPath+" is used. Acceptable forms: https://you.example.com, example.com:1345 (https assumed), or http://you.example.com/alt-root")
 	flag.StringVar(&flagSecretRing, "secret-keyring", "", "GnuPG secret keyring file to use.")
 }
@@ -297,7 +301,9 @@ func (c *Client) SetupAuth() error {
 	}
 	authConf := serverAuth(c.server)
 	if authConf == "" {
-		return fmt.Errorf("Could not find auth key for server %q in config", c.server)
+		c.authErr = fmt.Errorf("could not find auth key for server %q in config, defaulting to no auth", c.server)
+		c.authMode = auth.None{}
+		return nil
 	}
 	var err error
 	c.authMode, err = auth.FromConfig(authConf)
@@ -436,16 +442,17 @@ func (c *Client) initIgnoredFiles() {
 	c.ignoredFiles = config.IgnoredFiles
 }
 
+var osutilHomeDir = osutil.HomeDir // changed by tests
+
 // newIgnoreChecker uses ignoredFiles to build and return a func that returns whether the file path argument should be ignored. See IsIgnoredFile for the ignore rules.
 func newIgnoreChecker(ignoredFiles []string) func(path string) (shouldIgnore bool) {
 	var fns []func(string) bool
 
-	home := osutil.HomeDir()
 	// copy of ignoredFiles for us to mutate
 	ignFiles := append([]string(nil), ignoredFiles...)
 	for k, v := range ignFiles {
 		if strings.HasPrefix(v, filepath.FromSlash("~/")) {
-			ignFiles[k] = filepath.Join(home, v[2:])
+			ignFiles[k] = filepath.Join(osutilHomeDir(), v[2:])
 		}
 	}
 	// We cache the ignoredFiles patterns in 3 categories (not necessarily exclusive):

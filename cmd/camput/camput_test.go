@@ -23,7 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +53,11 @@ func (e *env) Run(args ...string) (out, err []byte, exitCode int) {
 	errbuf := new(bytes.Buffer)
 	os.Args = append(os.Args[:1], args...)
 	cmdmain.Stdout, cmdmain.Stderr = outbuf, errbuf
+	if e.stdin == nil {
+		cmdmain.Stdin = strings.NewReader("")
+	} else {
+		cmdmain.Stdin = e.stdin
+	}
 	exitc := make(chan int, 1)
 	cmdmain.Exit = func(code int) {
 		exitc <- code
@@ -88,6 +93,23 @@ func TestUsageOnNoargs(t *testing.T) {
 	}
 }
 
+// TestCommandUsage tests that we output a command-specific usage message and return
+// with a non-zero exit status.
+func TestCommandUsage(t *testing.T) {
+	var e env
+	out, err, code := e.Run("attr")
+	if code != 1 {
+		t.Errorf("exit code = %d; want 1", code)
+	}
+	if len(out) != 0 {
+		t.Errorf("wanted nothing on stdout; got:\n%s", out)
+	}
+	sub := "Attr takes 3 args: <permanode> <attr> <value>"
+	if !bytes.Contains(err, []byte(sub)) {
+		t.Errorf("stderr doesn't contain substring %q. Got:\n%s", sub, err)
+	}
+}
+
 func TestUploadingChangingDirectory(t *testing.T) {
 	// TODO(bradfitz):
 	//    $ mkdir /tmp/somedir
@@ -97,62 +119,116 @@ func TestUploadingChangingDirectory(t *testing.T) {
 	t.Logf("TODO")
 }
 
+func testWithTempDir(t *testing.T, fn func(tempDir string)) {
+	tempDir, err := ioutil.TempDir("", "")
+	if err != nil {
+		t.Errorf("error creating temp dir: %v", err)
+		return
+	}
+	defer os.RemoveAll(tempDir)
+
+	confDir := filepath.Join(tempDir, "conf")
+	mustMkdir(t, confDir, 0700)
+	defer os.Setenv("CAMLI_CONFIG_DIR", os.Getenv("CAMLI_CONFIG_DIR"))
+	os.Setenv("CAMLI_CONFIG_DIR", confDir)
+	if err := ioutil.WriteFile(filepath.Join(confDir, "client-config.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	debugFlagOnce.Do(registerDebugFlags)
+
+	fn(tempDir)
+}
+
 // Tests that uploads of deep directory trees don't deadlock.
 // See commit ee4550bff453526ebae460da1ad59f6e7f3efe77 for backstory
 func TestUploadDirectories(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping test in short mode.")
 	}
-	if v, _ := strconv.ParseBool(os.Getenv("RUN_UPLOAD_DEADLOCK_TEST")); !v {
-		// Temporary. For now the test isn't working (failing) reliably.
-		// Once the test fails reliably, then we fix.
-		t.Skip("skipping test without RUN_UPLOAD_DEADLOCK_TEST=1 in environment")
-	}
 
-	debugFlagOnce.Do(registerDebugFlags)
+	testWithTempDir(t, func(tempDir string) {
+		uploadRoot := filepath.Join(tempDir, "to_upload") // read from here
+		mustMkdir(t, uploadRoot, 0700)
 
-	baseDir, err := ioutil.TempDir("", "")
-	if err != nil {
-		t.Errorf("error creating temp dir: %v", err)
-		return
-	}
-	defer os.RemoveAll(baseDir)
+		blobDestDir := filepath.Join(tempDir, "blob_dest") // write to here
+		mustMkdir(t, blobDestDir, 0700)
 
-	uploadRoot := filepath.Join(baseDir, "to_upload")
-	mustMkdir(t, uploadRoot, 0700)
-	// TODO: make wider trees under uploadRoot, taking care to
-	// name dirs and files such that alphabetic statting causes a
-	// deadlock.  This isn't sufficient yet:
-	dirIter := baseDir
-	for i := 0; i < 10; i++ {
-		dirPath := filepath.Join(dirIter, "dir")
-		mustMkdir(t, dirPath, 0700)
-		for _, baseFile := range []string{"file", "FILE.txt"} {
-			filePath := filepath.Join(dirPath, baseFile)
-			if err := ioutil.WriteFile(filePath, []byte("some file contents "+filePath), 0600); err != nil {
-				t.Fatalf("error writing to %s: %v", filePath, err)
+		// There are 10 stat cache workers. Simulate a slow lookup in
+		// the file-based ones (similar to reality), so the
+		// directory-based nodes make it to the upload worker first
+		// (where it would currently/previously deadlock waiting on
+		// children that are starved out) See
+		// ee4550bff453526ebae460da1ad59f6e7f3efe77.
+		testHookStatCache = func(n *node, ok bool) {
+			if ok && strings.HasSuffix(n.fullPath, ".txt") {
+				time.Sleep(50 * time.Millisecond)
 			}
-			t.Logf("Wrote file %s", filePath)
 		}
-		dirIter = dirPath
-	}
-	firstDir := filepath.Join(baseDir, "dir")
-	t.Logf("Will upload %s", firstDir)
+		defer func() { testHookStatCache = nil }()
 
-	defer setAndRestore(&uploadWorkers, 1)()
+		dirIter := uploadRoot
+		for i := 0; i < 2; i++ {
+			dirPath := filepath.Join(dirIter, "dir")
+			mustMkdir(t, dirPath, 0700)
+			for _, baseFile := range []string{"file.txt", "FILE.txt"} {
+				filePath := filepath.Join(dirPath, baseFile)
+				if err := ioutil.WriteFile(filePath, []byte("some file contents "+filePath), 0600); err != nil {
+					t.Fatalf("error writing to %s: %v", filePath, err)
+				}
+				t.Logf("Wrote file %s", filePath)
+			}
+			dirIter = dirPath
+		}
 
-	e := &env{
-		Timeout: 5 * time.Second,
+		// Now set statCacheWorkers greater than uploadWorkers, so the
+		// sleep above can re-arrange the order that files get
+		// uploaded in, so the directory comes before the file. This
+		// was the old deadlock.
+		defer setAndRestore(&uploadWorkers, 1)()
+		defer setAndRestore(&dirUploadWorkers, 1)()
+		defer setAndRestore(&statCacheWorkers, 5)()
+
+		e := &env{
+			Timeout: 5 * time.Second,
+		}
+		stdout, stderr, exit := e.Run(
+			"--blobdir="+blobDestDir,
+			"--havecache=false",
+			"--verbose=false", // useful to set true for debugging
+			"file",
+			uploadRoot)
+		if exit != 0 {
+			t.Fatalf("Exit status %d: stdout=[%s], stderr=[%s]", exit, stdout, stderr)
+		}
+	})
+}
+
+func TestCamputBlob(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test in short mode.")
 	}
-	stdout, stderr, exit := e.Run(
-		"--blobdir="+baseDir,
-		"--havecache=false",
-		"--verbose",
-		"file",
-		firstDir)
-	if exit != 0 {
-		t.Fatalf("Exit status %d: stdout=[%s], stderr=[%s]", exit, stdout, stderr)
-	}
+
+	testWithTempDir(t, func(tempDir string) {
+		blobDestDir := filepath.Join(tempDir, "blob_dest") // write to here
+		mustMkdir(t, blobDestDir, 0700)
+
+		e := &env{
+			Timeout: 5 * time.Second,
+			stdin:   strings.NewReader("foo"),
+		}
+		stdout, stderr, exit := e.Run(
+			"--blobdir="+blobDestDir,
+			"--havecache=false",
+			"--verbose=false", // useful to set true for debugging
+			"blob", "-")
+		if exit != 0 {
+			t.Fatalf("Exit status %d: stdout=[%s], stderr=[%s]", exit, stdout, stderr)
+		}
+		if got, want := string(stdout), "sha1-0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33\n"; got != want {
+			t.Errorf("Stdout = %q; want %q", got, want)
+		}
+	})
 }
 
 func mustMkdir(t *testing.T, fn string, mode int) {
@@ -162,12 +238,6 @@ func mustMkdir(t *testing.T, fn string, mode int) {
 }
 
 func setAndRestore(dst *int, v int) func() {
-	old := *dst
-	*dst = v
-	return func() { *dst = old }
-}
-
-func setAndRestoreBool(dst *bool, v bool) func() {
 	old := *dst
 	*dst = v
 	return func() { *dst = old }

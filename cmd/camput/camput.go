@@ -59,18 +59,23 @@ func init() {
 	if debug, _ := strconv.ParseBool(os.Getenv("CAMLI_DEBUG")); debug {
 		debugFlagOnce.Do(registerDebugFlags)
 	}
-	cmdmain.ExtraFlagRegistration = func() {
-		client.AddFlags()
-	}
+	cmdmain.ExtraFlagRegistration = client.AddFlags
 	cmdmain.PreExit = func() {
 		if up := uploader; up != nil {
 			up.Close()
 			stats := up.Stats()
-			log.Printf("Client stats: %s", stats.String())
-			if up.transport != nil {
-				log.Printf("  #HTTP reqs: %d", up.transport.Requests())
+			if *cmdmain.FlagVerbose {
+				log.Printf("Client stats: %s", stats.String())
+				if up.transport != nil {
+					log.Printf("  #HTTP reqs: %d", up.transport.Requests())
+				}
 			}
 		}
+
+		// So multiple cmd/camput TestFoo funcs run, each with
+		// an fresh (and not previously closed) Uploader:
+		uploader = nil
+		uploaderOnce = sync.Once{}
 	}
 }
 
@@ -99,7 +104,7 @@ func handleResult(what string, pr *client.PutResult, err error) error {
 		cmdmain.ExitWithFailure = true
 		return err
 	}
-	fmt.Println(pr.BlobRef.String())
+	fmt.Fprintln(cmdmain.Stdout, pr.BlobRef.String())
 	return nil
 }
 
