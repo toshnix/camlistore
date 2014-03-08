@@ -414,6 +414,7 @@ func TestIssue305(t *testing.T) {
 }
 
 func TestStaticFileAndStaticSymlink(t *testing.T) {
+	// TODO (marete): Split this into two test functions.
 	fd, err := ioutil.TempFile("", "schema-test-")
 	if err != nil {
 		t.Fatalf("io.TempFile(): %v", err)
@@ -427,19 +428,17 @@ func TestStaticFileAndStaticSymlink(t *testing.T) {
 	}
 
 	bb := NewCommonFileMap(fd.Name(), fi)
-	bb = bb.SetType("file")
-	bb = bb.SetFileName(fd.Name())
+	bb.SetType("file")
+	bb.SetFileName(fd.Name())
 	blob := bb.Blob()
 
 	sf, ok := blob.AsStaticFile()
 	if !ok {
 		t.Fatalf("Blob.AsStaticFile(): Unexpected return value: false")
 	}
-	expectedStr := filepath.Base(fd.Name())
-	gotStr := sf.FileName()
-	if expectedStr != gotStr {
+	if want, got := filepath.Base(fd.Name()), sf.FileName(); want != got {
 		t.Fatalf("StaticFile.FileName(): Expected %s, got %s",
-			expectedStr, gotStr)
+			want, got)
 	}
 
 	_, ok = sf.AsStaticSymlink()
@@ -462,9 +461,9 @@ func TestStaticFileAndStaticSymlink(t *testing.T) {
 	}
 
 	bb = NewCommonFileMap(src, fi)
-	bb = bb.SetType("symlink")
-	bb = bb.SetFileName(src)
-	bb = bb.SetSymlinkTarget(target)
+	bb.SetType("symlink")
+	bb.SetFileName(src)
+	bb.SetSymlinkTarget(target)
 	blob = bb.Blob()
 
 	sf, ok = blob.AsStaticFile()
@@ -475,15 +474,12 @@ func TestStaticFileAndStaticSymlink(t *testing.T) {
 	if !ok {
 		t.Fatalf("StaticFile.AsStaticSymlink(): Unexpected return value: false")
 	}
-	expectedStr = filepath.Base(src)
-	gotStr = sl.FileName()
-	if expectedStr != gotStr {
+	if want, got := filepath.Base(src), sl.FileName(); want != got {
 		t.Fatalf("StaticSymlink.FileName(): Expected %s, got %s",
-			expectedStr, gotStr)
+			want, got)
 	}
-	expectedStr = target
-	gotStr = sl.SymlinkTargetString()
-	if expectedStr != gotStr {
-		t.Fatalf("StaticSymlink.SymlinkTargetString(): Expected %s, got %s", expectedStr, gotStr)
+
+	if want, got := target, sl.SymlinkTargetString(); got != want {
+		t.Fatalf("StaticSymlink.SymlinkTargetString(): Expected %s, got %s", want, got)
 	}
 }
