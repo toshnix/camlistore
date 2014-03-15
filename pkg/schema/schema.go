@@ -349,22 +349,31 @@ func stringFromMixedArray(parts []interface{}) string {
 	return buf.String()
 }
 
-func mixedArrayFromString(s string) []interface{} {
-	buf := []byte(s)
-	var name []interface{}
-	n := 0
-	for n < len(buf) {
-		part, offset := nextStringOrByte(buf[n:])
-		name = append(name, part)
-		n += offset
+// mixedArrayFromString is the inverse of stringFromMixedArray. It
+// splits a string to a series of alternating UTF-8 string segments
+// and non-UTF-8 []byte elements.
+func mixedArrayFromString(s string) (mixedName []interface{}) {
+	if utf8.ValidString(s) {
+		return append(mixedName, s)
 	}
 
-	return name
+	buf := []byte(s)
+	for len(buf) > 0 {
+		part, offset := nextStringOrByte(buf)
+		buf = buf[offset:]
+		mixedName = append(mixedName, part)
+	}
+
+	return
 }
 
-func nextStringOrByte(b []byte) (interface{}, int) {
+// nextStringOrByte returns either the longest UTF-8 string prefix or
+// the the first byte of b, if b does not contain a valid UTF-8
+// prefuix. consumed will be the length of the returned string or 1
+// when b does not contain a valid UTF-8 prefix.
+func nextStringOrByte(b []byte) (part interface{}, consumed int) {
 	n := 0
-	var s []byte
+	s := make([]byte, 0, 64)
 	for n < len(b) {
 		r, size := utf8.DecodeRune(b[n:])
 		if r == utf8.RuneError {
@@ -376,9 +385,11 @@ func nextStringOrByte(b []byte) (interface{}, int) {
 			return b[n], 1
 		}
 		n += size // We have consumed size bytes
-		c := make([]byte, utf8.RuneLen(r))
-		_ = utf8.EncodeRune(c, r)
-		s = append(s, c...)
+		rl := utf8.RuneLen(r)
+		for i := 0; i < rl; i++ {
+			s = append(s, 0)
+		}
+		utf8.EncodeRune(s[(len(s)-rl):], r)
 	}
 
 	return string(s), n
