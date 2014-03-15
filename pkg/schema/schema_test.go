@@ -21,6 +21,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -102,6 +103,30 @@ func TestStringFromMixedArray(t *testing.T) {
 		got := stringFromMixedArray(v)
 		if got != test.expected {
 			t.Errorf("test %d got %q; expected %q", idx, got, test.expected)
+		}
+	}
+}
+
+type mixedFromStringTest struct {
+	input    string
+	expected []interface{}
+}
+
+func TestMixedArrayFromString(t *testing.T) {
+	tests := []mixedFromStringTest{
+		{"brad", []interface{}{"brad"}},
+		{"Am\xe9lie.jpg", []interface{}{"Am", byte(233), "lie.jpg"}},
+		{"Shakin\xe2\xb4 Going\xe2\xb4 On.mp3",
+			[]interface{}{"Shakin", byte(0xe2), byte(0xb4),
+				" Going", byte(0xe2), byte(0xb4), " On.mp3"}},
+		{"Se\xf1orita", []interface{}{"Se", byte(0xf1), "orita"}},
+		{"\xf1ABC", []interface{}{byte(0xf1), "ABC"}},
+	}
+
+	for _, tt := range tests {
+		got := mixedArrayFromString(tt.input)
+		if !reflect.DeepEqual(tt.expected, got) {
+			t.Fatalf("Expected %+v, got %+v", tt.expected, got)
 		}
 	}
 }
