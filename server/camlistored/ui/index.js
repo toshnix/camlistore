@@ -1,5 +1,5 @@
 /*
-Copyright 2012 Google Inc.
+Copyright 2014 The Camlistore Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,442 +16,470 @@ limitations under the License.
 
 goog.provide('cam.IndexPage');
 
-goog.require('goog.array');
 goog.require('goog.dom');
-goog.require('goog.dom.classes');
+goog.require('goog.dom.classlist');
 goog.require('goog.events.EventHandler');
-goog.require('goog.events.EventType');
-goog.require('goog.events.KeyCodes');
+goog.require('goog.labs.Promise');
+goog.require('goog.object');
 goog.require('goog.string');
 goog.require('goog.Uri');
-goog.require('goog.ui.Component');
-goog.require('goog.ui.Textarea');
 
-goog.require('cam.AnimationLoop');
-goog.require('cam.BlobItemContainer');
+goog.require('cam.BlobItemContainerReact');
 goog.require('cam.DetailView');
-goog.require('cam.object');
-goog.require('cam.Nav');
 goog.require('cam.Navigator');
+goog.require('cam.NavReact');
+goog.require('cam.reactUtil');
 goog.require('cam.SearchSession');
 goog.require('cam.ServerConnection');
-goog.require('cam.ServerType');
 
-cam.IndexPage = function(config, opt_domHelper) {
-	goog.base(this, opt_domHelper);
+cam.IndexPage = React.createClass({
+	displayName: 'IndexPage',
 
-	this.config_ = config;
+	NAV_WIDTH_CLOSED_: 36,
+	NAV_WIDTH_OPEN_: 239,
 
-	this.connection_ = new cam.ServerConnection(config);
+	THUMBNAIL_SIZES_: [75, 100, 150, 200, 250, 300],
 
-	this.eh_ = new goog.events.EventHandler(this);
+	SEARCH_PREFIX_: {
+		RAW: 'raw'
+	},
 
-	this.baseURL_ = goog.Uri.resolve(location.href, this.config_.uiRoot);
-	this.currentURL_ = null;
+	propTypes: {
+		availWidth: React.PropTypes.number.isRequired,
+		availHeight: React.PropTypes.number.isRequired,
+		config: React.PropTypes.object.isRequired,
+		eventTarget: cam.reactUtil.quacksLike({addEventListener:React.PropTypes.func.isRequired}).isRequired,
+		history: cam.reactUtil.quacksLike({pushState:React.PropTypes.func.isRequired, replaceState:React.PropTypes.func.isRequired, go:React.PropTypes.func.isRequired, state:React.PropTypes.object}).isRequired,
+		location: cam.reactUtil.quacksLike({href:React.PropTypes.string.isRequired, reload:React.PropTypes.func.isRequired}).isRequired,
+		serverConnection: React.PropTypes.instanceOf(cam.ServerConnection).isRequired,
+		timer: cam.NavReact.originalSpec.propTypes.timer,
+	},
 
-	this.navigator_ = new cam.Navigator(window, location, history, true);
-	this.navigator_.onNavigate = this.handleURL_.bind(this);
+	componentWillMount: function() {
+		this.baseURL_ = null;
+		this.currentSet_ = null;
+		this.dragEndTimer_ = 0;
+		this.navigator_ = null;
+		this.searchSession_ = null;
 
-	this.nav_ = new cam.Nav(opt_domHelper, this);
+		// TODO(aa): Move this to index.css once conversion to React is complete (index.css is shared between React and non-React).
+		goog.dom.getDocumentScrollElement().style.overflow = 'hidden';
 
-	this.searchNavItem_ = new cam.Nav.SearchItem(this.dom_, 'magnifying_glass.svg', 'Search');
-	this.newPermanodeNavItem_ = new cam.Nav.Item(this.dom_, 'new_permanode.svg', 'New permanode');
-	this.searchRootsNavItem_ = new cam.Nav.Item(this.dom_, 'icon_27307.svg', 'Search roots');
-	this.selectAsCurrentSetNavItem_ = new cam.Nav.Item(this.dom_, 'target.svg', 'Select as current set');
-	this.selectAsCurrentSetNavItem_.setVisible(false);
-	this.addToSetNavItem_ = new cam.Nav.Item(this.dom_, 'icon_16716.svg', 'Add to set');
-	this.addToSetNavItem_.setVisible(false);
-	this.createSetWithSelectionNavItem_ = new cam.Nav.Item(this.dom_, 'circled_plus.svg', 'Create set with 5 items');
-	this.createSetWithSelectionNavItem_.setVisible(false);
-	this.clearSelectionNavItem_ = new cam.Nav.Item(this.dom_, 'clear.svg', 'Clear selection');
-	this.clearSelectionNavItem_.setVisible(false);
-	this.embiggenNavItem_ = new cam.Nav.Item(this.dom_, 'up.svg', 'Moar bigger');
-	this.ensmallenNavItem_ = new cam.Nav.Item(this.dom_, 'down.svg', 'Less bigger');
-	this.logoNavItem_ = new cam.Nav.LinkItem(this.dom_, '/favicon.ico', 'Camlistore', '/ui/');
-	this.logoNavItem_.addClassName('cam-logo');
+		this.eh_ = new goog.events.EventHandler(this);
 
-	this.searchSession_ = null;
+		var newURL = new goog.Uri(this.props.location.href);
+		this.baseURL_ = newURL.resolve(new goog.Uri(CAMLISTORE_CONFIG.uiRoot));
 
-	this.blobItemContainer_ = new cam.BlobItemContainer(this.connection_, opt_domHelper);
-	this.blobItemContainer_.isSelectionEnabled = true;
-	this.blobItemContainer_.isFileDragEnabled = true;
+		this.navigator_ = new cam.Navigator(this.props.eventTarget, this.props.location, this.props.history, true);
+		this.navigator_.onNavigate = this.handleNavigate_;
 
-	// TODO(aa): This is a quick hack to make the scroll position restore in the case where you go to detail view, then press back to search page.
-	// To make the reload case work we need to save the scroll position in window.history. That needs more thought though, we might want to store something more abstract that the scroll position.
-	this.savedScrollPosition_ = 0;
+		this.handleNavigate_(newURL);
+	},
 
-	this.inDetailMode_ = false;
-	this.inSearchMode_ = false;
-	this.detail_ = null;
-	this.detailLoop_ = null;
-	this.detailViewHost_ = null;
-};
-goog.inherits(cam.IndexPage, goog.ui.Component);
+	componentDidMount: function() {
+		this.eh_.listen(this.props.eventTarget, 'keypress', this.handleKeyPress_);
+	},
 
-cam.IndexPage.prototype.onNavOpen = function() {
-	this.setTransform_();
-};
+	componentWillUnmount: function() {
+		this.eh_.dispose();
+		this.clearDragTimer_();
+	},
 
-cam.IndexPage.prototype.setTransform_ = function() {
-	var currentWidth = this.getElement().offsetWidth - 36;
-	var desiredWidth = currentWidth - (275 - 36);
-	var scale = desiredWidth / currentWidth;
+	getInitialState: function() {
+		return {
+			currentURL: null,
+			dropActive: false,
+			isNavOpen: false,
+			selection: {},
+			thumbnailSizeIndex: 3,
+		};
+	},
 
-	var currentHeight = goog.dom.getDocumentHeight();
-	var currentScroll = goog.dom.getDocumentScroll().y;
-	var potentialScroll = currentHeight - goog.dom.getViewportSize().height;
-	var originY = currentHeight * currentScroll / potentialScroll;
+	render: function() {
+		return React.DOM.div({onDragEnter:this.handleDragStart_, onDragOver:this.handleDragStart_, onDrop:this.handleDrop_}, [
+			this.getNav_(),
+			this.getBlobItemContainer_(),
+			this.getDetailView_(),
+		]);
+	},
 
-	goog.style.setStyle(this.blobItemContainer_.getElement(),
-		// The 3d transform is important. See: https://code.google.com/p/camlistore/issues/detail?id=284.
-		{'transform': goog.string.subs('scale3d(%s, %s, 1)', scale, scale),
-			'transform-origin': goog.string.subs('right %spx 0', originY)});
-};
+	handleDragStart_: function(e) {
+		this.clearDragTimer_();
+		e.preventDefault();
+		this.dragEndTimer_ = window.setTimeout(this.handleDragStop_, 2000);
+		goog.dom.classlist.add(this.getDOMNode().parentElement, 'cam-dropactive');
+	},
 
-cam.IndexPage.prototype.onNavClose = function() {
-	if (!this.blobItemContainer_.getElement()) {
-		return;
-	}
-	this.searchNavItem_.setText('');
-	this.searchNavItem_.blur();
-	goog.style.setStyle(this.blobItemContainer_.getElement(), {'transform': ''});
-};
+	handleDragStop_: function() {
+		this.clearDragTimer_();
+		goog.dom.classlist.remove(this.getDOMNode().parentElement, 'cam-dropactive');
+	},
 
-cam.IndexPage.SEARCH_PREFIX_ = {
-	RAW: 'raw'
-};
-
-cam.IndexPage.prototype.createDom = function() {
-	this.decorateInternal(this.dom_.createElement('div'));
-};
-
-cam.IndexPage.prototype.decorateInternal = function(element) {
-	cam.IndexPage.superClass_.decorateInternal.call(this, element);
-
-	var el = this.getElement();
-
-	document.title = this.config_.ownerName + '\'s Vault';
-
-	this.nav_.addChild(this.searchNavItem_, true);
-	this.nav_.addChild(this.newPermanodeNavItem_, true);
-	this.nav_.addChild(this.searchRootsNavItem_, true);
-	this.nav_.addChild(this.selectAsCurrentSetNavItem_, true);
-	this.nav_.addChild(this.addToSetNavItem_, true);
-	this.nav_.addChild(this.createSetWithSelectionNavItem_, true);
-	this.nav_.addChild(this.clearSelectionNavItem_, true);
-	this.nav_.addChild(this.embiggenNavItem_, true);
-	this.nav_.addChild(this.ensmallenNavItem_, true);
-	this.nav_.addChild(this.logoNavItem_, true);
-
-	this.detailViewHost_ = this.dom_.createElement('div');
-
-	this.addChild(this.nav_, true);
-	this.addChild(this.blobItemContainer_, true);
-	el.appendChild(this.detailViewHost_);
-};
-
-cam.IndexPage.prototype.updateNavButtonsForSelection_ = function() {
-	var blobItems = this.blobItemContainer_.getCheckedBlobItems();
-	var count = blobItems.length;
-
-	if (count) {
-		var txt = 'Create set with ' + count + ' item' + (count > 1 ? 's' : '');
-		this.createSetWithSelectionNavItem_.setContent(txt);
-		this.createSetWithSelectionNavItem_.setVisible(true);
-		this.clearSelectionNavItem_.setVisible(true);
-	} else {
-		this.createSetWithSelectionNavItem_.setContent('');
-		this.createSetWithSelectionNavItem_.setVisible(false);
-		this.clearSelectionNavItem_.setVisible(false);
-	}
-
-	if (this.blobItemContainer_.currentCollec_ && this.blobItemContainer_.currentCollec_ != "" && blobItems.length > 0) {
-		this.addToSetNavItem_.setVisible(true);
-	} else {
-		this.addToSetNavItem_.setVisible(false);
-	}
-
-	if (blobItems.length == 1 && blobItems[0].isCollection()) {
-		this.selectAsCurrentSetNavItem_.setVisible(true);
-	} else {
-		this.selectAsCurrentSetNavItem_.setVisible(false);
-	}
-};
-
-cam.IndexPage.prototype.disposeInternal = function() {
-	cam.IndexPage.superClass_.disposeInternal.call(this);
-	this.eh_.dispose();
-};
-
-cam.IndexPage.prototype.enterDocument = function() {
-	cam.IndexPage.superClass_.enterDocument.call(this);
-
-	this.connection_.serverStatus(goog.bind(function(resp) {
-		this.handleServerStatus_(resp);
-	}, this));
-
-	this.searchNavItem_.onSearch = this.setURLSearch_.bind(this);
-
-	this.embiggenNavItem_.onClick = function() {
-		if (this.blobItemContainer_.bigger()) {
-			var force = true;
-			this.blobItemContainer_.layout_(force);
+	clearDragTimer_: function() {
+		if (this.dragEndTimer_) {
+			window.clearTimeout(this.dragEndTimer_);
+			this.dragEndTimer_ = 0;
 		}
-	}.bind(this);
+	},
 
-	this.ensmallenNavItem_.onClick = function() {
-		if (this.blobItemContainer_.smaller()) {
-			// Don't run a query. Let the browser do the image resizing on its own.
-			var force = true;
-			this.blobItemContainer_.layout_(force);
-			// Since things got smaller, we may need to fetch more content.
-			this.blobItemContainer_.handleScroll_();
-		}
-	}.bind(this);
-
-	this.createSetWithSelectionNavItem_.onClick = function() {
-		var blobItems = this.blobItemContainer_.getCheckedBlobItems();
-		this.createNewSetWithItems_(blobItems);
-	}.bind(this);
-
-	this.clearSelectionNavItem_.onClick = this.blobItemContainer_.unselectAll.bind(this.blobItemContainer_);
-
-	this.newPermanodeNavItem_.onClick = function() {
-		this.connection_.createPermanode(function(p) {
-			window.location = './?p=' + p;
-		}, function(failMsg) {
-			console.error('Failed to create permanode: ' + failMsg);
-		});
-	}.bind(this);
-
-	this.addToSetNavItem_.onClick = function() {
-		var blobItems = this.blobItemContainer_.getCheckedBlobItems();
-		this.addItemsToSet_(blobItems);
-	}.bind(this);
-
-	this.selectAsCurrentSetNavItem_.onClick = function() {
-		var blobItems = this.blobItemContainer_.getCheckedBlobItems();
-		// there should be only one item selected
-		if (blobItems.length != 1) {
-			alert("Cannet set multiple items as current collection");
+	handleDrop_: function(e) {
+		if (!e.nativeEvent.dataTransfer.files) {
 			return;
 		}
-		this.blobItemContainer_.currentCollec_ = blobItems[0].blobRef_;
-		this.blobItemContainer_.unselectAll();
-		this.updateNavButtonsForSelection_();
-	}.bind(this);
 
-	this.searchRootsNavItem_.onClick = this.setURLSearch_.bind(this, {
-		permanode: {
-			attr: 'camliRoot',
-			numValue: {
-				min: 1
+		e.preventDefault();
+
+		var files = e.nativeEvent.dataTransfer.files;
+		var numComplete = 0;
+		var sc = this.props.serverConnection;
+
+		console.log('Uploading %d files...', files.length);
+		goog.labs.Promise.all(Array.prototype.map.call(files, function(file) {
+			var upload = new goog.labs.Promise(sc.uploadFile.bind(sc, file));
+			var createPermanode = new goog.labs.Promise(sc.createPermanode.bind(sc));
+			return goog.labs.Promise.all([upload, createPermanode]).then(function(results) {
+				// TODO(aa): Icky manual destructuring of results. Seems like there must be a better way?
+				var fileRef = results[0];
+				var permanodeRef = results[1];
+				return new goog.labs.Promise(sc.newSetAttributeClaim.bind(sc, permanodeRef, 'camliContent', fileRef));
+			}).thenCatch(function(e) {
+				console.error('File upload fall down go boom. file: %s, error: %s', file.name, e);
+			}).then(function() {
+				console.log('%d of %d files complete.', ++numComplete, files.length);
+			});
+		})).then(function() {
+			console.log('All complete');
+		});
+	},
+
+	handleNavigate_: function(newURL) {
+		if (this.state.currentURL) {
+			if (this.state.currentURL.getPath() != newURL.getPath()) {
+				return false;
 			}
 		}
-	});
 
-	this.eh_.listen(this.blobItemContainer_, cam.BlobItemContainer.EventType.SELECTION_CHANGED, this.updateNavButtonsForSelection_.bind(this));
-
-	this.eh_.listen(this.getElement(), 'keypress', function(e) {
-		if (String.fromCharCode(e.charCode) == '/') {
-			this.nav_.open();
-			this.searchNavItem_.focus();
-			e.preventDefault();
-		}
-	});
-
-	this.handleURL_(new goog.Uri(location.href));
-};
-
-cam.IndexPage.prototype.exitDocument = function() {
-	cam.IndexPage.superClass_.exitDocument.call(this);
-	// Clear event handlers here
-};
-
-cam.IndexPage.prototype.createNewSetWithItems_ = function(blobItems) {
-	this.connection_.createPermanode(goog.bind(this.addMembers_, this, true, blobItems));
-};
-
-cam.IndexPage.prototype.addItemsToSet_ = function(blobItems) {
-	if (!this.blobItemContainer_.currentCollec_ || this.blobItemContainer_.currentCollec_ == "") {
-		alert("no destination collection selected");
-	}
-	this.addMembers_(false, blobItems, this.blobItemContainer_.currentCollec_);
-};
-
-cam.IndexPage.prototype.addMembers_ = function(newSet, blobItems, permanode) {
-	var deferredList = [];
-	var complete = goog.bind(this.addItemsToSetDone_, this, permanode);
-	var callback = function() {
-		deferredList.push(1);
-		if (deferredList.length == blobItems.length) {
-			complete();
-		}
-	};
-
-	// TODO(mpl): newSet is a lame trick. Do better.
-	if (newSet) {
-		this.connection_.newSetAttributeClaim(permanode, 'title', 'My new set', function() {});
-	}
-	goog.array.forEach(blobItems, function(blobItem, index) {
-		this.connection_.newAddAttributeClaim(permanode, 'camliMember', blobItem.getBlobRef(), callback);
-	}, this);
-};
-
-cam.IndexPage.prototype.addItemsToSetDone_ = function(permanode) {
-	this.blobItemContainer_.unselectAll();
-	this.updateNavButtonsForSelection_();
-	this.setURLSearch_(' ');
-};
-
-cam.IndexPage.prototype.handleServerStatus_ = function(resp) {
-	if (resp && resp.version) {
-		// TODO(aa): Argh
-		//this.toolbar_.setStatus('v' + resp.version);
-	}
-};
-
-cam.IndexPage.prototype.setURLSearch_ = function(search) {
-	var searchText = goog.isString(search) ? goog.string.trim(search) :
-		goog.string.subs('%s:%s', this.constructor.SEARCH_PREFIX_.RAW, JSON.stringify(search));
-	var searchURL = this.baseURL_.clone();
-	searchURL.setParameterValue('q', searchText);
-	this.navigator_.navigate(searchURL);
-};
-
-// @param goog.Uri newURL The URL we have navigated to. At this point, location.href is already updated -- this is just the parsed representation.
-// @return boolean Whether the navigation was handled.
-cam.IndexPage.prototype.handleURL_ = function(newURL) {
-	if (this.currentURL_) {
-		if (newURL.getScheme() != this.currentURL_.getScheme() ||
-			newURL.getUserInfo() != this.currentURL_.getUserInfo() ||
-			newURL.getDomain() != this.currentURL_.getDomain() ||
-			newURL.getPort() != this.currentURL_.getPort() ||
-			newURL.getPath() != this.currentURL_.getPath()) {
+		if (!this.isSearchMode_(newURL) && !this.isDetailMode_(newURL)) {
 			return false;
 		}
-	}
 
-	// This is super finicky. We should improve the URL scheme and give things that are different different paths.
-	var query = newURL.clone().removeParameter('react').getQueryData();
-	this.inSearchMode_ = query.getCount() == 0 || (query.getCount() == 1 && query.containsKey('q'));
-	this.inDetailMode_ = query.containsKey('p') && query.get('newui') == '1';
+		this.updateSearchSession_(newURL);
+		this.setState({currentURL: newURL});
+		return true;
+	},
 
-	if (!this.inSearchMode_ && !this.inDetailMode_) {
-		return false;
-	}
-
-	this.currentURL_ = newURL;
-	this.updateSearchSession_();
-	this.updateScrollbar_();
-	this.updateSearchView_();
-	this.updateDetailView_();
-	return true;
-};
-
-cam.IndexPage.prototype.updateSearchSession_ = function() {
-	var query = this.currentURL_.getParameterValue('q');
-	if (!query) {
-		query = ' ';
-	}
-
-	// TODO(aa): Remove this when the server can do something like the 'raw' operator.
-	if (goog.string.startsWith(query, this.constructor.SEARCH_PREFIX_.RAW + ':')) {
-		query = JSON.parse(query.substring(this.constructor.SEARCH_PREFIX_.RAW.length + 1));
-	}
-
-	if (this.searchSession_ && JSON.stringify(this.searchSession_.getQuery()) == JSON.stringify(query)) {
-		return;
-	}
-
-	if (this.searchSession_) {
-		this.searchSession_.close();
-	}
-
-	this.searchSession_ = new cam.SearchSession(this.connection_, new goog.Uri(location.href), query);
-};
-
-cam.IndexPage.prototype.updateScrollbar_ = function() {
-	// It makes it easier to compute the layout of the aligned tiles if the scrollbar is reliably on.
-	document.body.style.overflowY = this.inSearchMode_ ? 'scroll' : '';
-};
-
-cam.IndexPage.prototype.updateSearchView_ = function() {
-	if (this.inDetailMode_) {
-		this.savedScrollPosition_ = goog.dom.getDocumentScroll().y;
-		this.blobItemContainer_.setVisible(false);
-		return;
-	}
-
-	if (!this.blobItemContainer_.isVisible()) {
-		this.blobItemContainer_.setVisible(true);
-		goog.dom.getDocumentScrollElement().scrollTop = this.savedScrollPosition_;
-	}
-
-	if (this.nav_.isOpen()) {
-		this.setTransform_();
-	}
-
-	this.blobItemContainer_.showSearchSession(this.searchSession_);
-};
-
-cam.IndexPage.prototype.updateDetailView_ = function() {
-	if (!this.inDetailMode_) {
-		if (this.detail_) {
-			this.detailLoop_.stop();
-			React.unmountComponentAtNode(this.detailViewHost_);
-			this.detailLoop_ = null;
-			this.detail_ = null;
+	updateSearchSession_: function(newURL) {
+		var query = newURL.getParameterValue('q');
+		if (!query) {
+			query = ' ';
 		}
-		return;
-	}
 
-	var searchURL = this.baseURL_.clone();
-	if (this.currentURL_.getQueryData().containsKey('q')) {
-		searchURL.setParameterValue('q', this.currentURL_.getParameterValue('q'));
-	}
-
-	var oldURL = this.baseURL_.clone();
-	oldURL.setParameterValue('p', this.currentURL_.getParameterValue('p'));
-
-	var getDetailURL = function(blobRef) {
-		var result = this.currentURL_.clone();
-		result.setParameterValue('p', blobRef);
-		return result;
-	}.bind(this);
-
-	var props = {
-		blobref: this.currentURL_.getParameterValue('p'),
-		history: history,
-		searchSession: this.searchSession_,
-		searchURL: searchURL,
-		oldURL: oldURL,
-		getDetailURL: getDetailURL,
-		navigator: this.navigator_,
-		keyEventTarget: window,
-	}
-
-	if (this.detail_) {
-		this.detail_.setProps(props);
-		return;
-	}
-
-	var lastWidth = window.innerWidth;
-	var lastHeight = window.innerHeight;
-
-	this.detail_ = cam.DetailView(cam.object.extend(props, {
-		width: lastWidth,
-		height: lastHeight
-	}));
-	React.renderComponent(this.detail_, this.detailViewHost_);
-
-	this.detailLoop_ = new cam.AnimationLoop(window);
-	this.detailLoop_.addEventListener('frame', function() {
-		if (window.innerWidth != lastWidth || window.innerHeight != lastHeight) {
-			lastWidth = window.innerWidth;
-			lastHeight = window.innerHeight;
-			this.detail_.setProps({width:lastWidth, height:lastHeight});
+		// TODO(aa): Remove this when the server can do something like the 'raw' operator.
+		if (goog.string.startsWith(query, this.SEARCH_PREFIX_.RAW + ':')) {
+			query = JSON.parse(query.substring(this.SEARCH_PREFIX_.RAW.length + 1));
 		}
-	}.bind(this));
-	this.detailLoop_.start();
-};
+
+		if (this.searchSession_ && JSON.stringify(this.searchSession_.getQuery()) == JSON.stringify(query)) {
+			return;
+		}
+
+		if (this.searchSession_) {
+			this.searchSession_.close();
+		}
+
+		this.searchSession_ = new cam.SearchSession(this.props.serverConnection, newURL.clone(), query);
+	},
+
+	getNav_: function() {
+		if (!this.isSearchMode_(this.state.currentURL)) {
+			return null;
+		}
+		return cam.NavReact({key:'nav', ref:'nav', timer:this.props.timer, open:this.state.isNavOpen, onOpen:this.handleNavOpen_, onClose:this.handleNavClose_}, [
+			cam.NavReact.SearchItem({key:'search', ref:'search', iconSrc:'magnifying_glass.svg', onSearch:this.setSearch_}, 'Search'),
+			this.getCreateSetWithSelectionItem_(),
+			cam.NavReact.Item({key:'roots', iconSrc:'icon_27307.svg', onClick:this.handleShowSearchRoots_}, 'Search roots'),
+			this.getSelectAsCurrentSetItem_(),
+			this.getAddToCurrentSetItem_(),
+			this.getClearSelectionItem_(),
+			this.getDeleteSelectionItem_(),
+			cam.NavReact.Item({key:'up', iconSrc:'up.svg', onClick:this.handleEmbiggen_}, 'Moar bigger'),
+			cam.NavReact.Item({key:'down', iconSrc:'down.svg', onClick:this.handleEnsmallen_}, 'Less bigger'),
+			cam.NavReact.LinkItem({key:'logo', iconSrc:'/favicon.ico', href:this.baseURL_.toString(), extraClassName:'cam-logo'}, 'Camlistore'),
+		]);
+	},
+
+	handleNavOpen_: function() {
+		this.setState({isNavOpen:true});
+	},
+
+	handleNavClose_: function() {
+		this.refs.search.clear();
+		this.refs.search.blur();
+		this.setState({isNavOpen:false});
+	},
+
+	handleNewPermanode_: function() {
+		this.props.serverConnection.createPermanode(function(p) {
+			this.navigator_.navigate(this.getDetailURL_(false, p));
+		}.bind(this));
+	},
+
+	handleShowSearchRoots_: function() {
+		this.setSearch_(this.SEARCH_PREFIX_.RAW + ':' + JSON.stringify({
+			permanode: {
+				attr: 'camliRoot',
+				numValue: {
+					min: 1
+				}
+			}
+		}));
+	},
+
+	handleSelectAsCurrentSet_: function() {
+		this.currentSet_ = goog.object.getAnyKey(this.state.selection);
+		this.setState({selection:{}});
+	},
+
+	handleAddToSet_: function() {
+		this.addMembersToSet_(this.currentSet_, goog.object.getKeys(this.state.selection));
+	},
+
+	handleCreateSetWithSelection_: function() {
+		var selection = goog.object.getKeys(this.state.selection);
+		this.props.serverConnection.createPermanode(function(permanode) {
+			this.props.serverConnection.newSetAttributeClaim(permanode, 'title', 'New set', function() {
+				this.addMembersToSet_(permanode, selection);
+			}.bind(this));
+		}.bind(this));
+	},
+
+	addMembersToSet_: function(permanode, blobrefs) {
+		var numComplete = -1;
+		var callback = function() {
+			if (++numComplete == blobrefs.length) {
+				this.setState({selection:{}});
+				this.searchSession_.refreshIfNecessary();
+			}
+		}.bind(this);
+
+		callback();
+
+		blobrefs.forEach(function(br) {
+			this.props.serverConnection.newAddAttributeClaim(permanode, 'camliMember', br, callback);
+		}.bind(this));
+	},
+
+	handleClearSelection_: function() {
+		this.setState({selection:{}});
+	},
+
+	handleDeleteSelection_: function() {
+		var blobrefs = goog.object.getKeys(this.state.selection);
+		var msg = 'Delete';
+		if (blobrefs.length > 1) {
+			msg += goog.string.subs(' %s items?', blobrefs.length);
+		} else {
+			msg += ' item?';
+		}
+		if (!confirm(msg)) {
+			return null;
+		}
+
+		var numDeleted = 0;
+		blobrefs.forEach(function(br) {
+			this.props.serverConnection.newDeleteClaim(br, function() {
+				if (++numDeleted == blobrefs.length) {
+					this.setState({selection:{}});
+					this.searchSession_.refreshIfNecessary();
+				}
+			}.bind(this));
+		}.bind(this));
+	},
+
+	handleEmbiggen_: function() {
+		var newSizeIndex = this.state.thumbnailSizeIndex + 1;
+		if (newSizeIndex < this.THUMBNAIL_SIZES_.length) {
+			this.setState({thumbnailSizeIndex:newSizeIndex});
+		}
+	},
+
+	handleEnsmallen_: function() {
+		var newSizeIndex = this.state.thumbnailSizeIndex - 1;
+		if (newSizeIndex >= 0) {
+			this.setState({thumbnailSizeIndex:newSizeIndex});
+		}
+	},
+
+	handleKeyPress_: function(e) {
+		if (String.fromCharCode(e.charCode) == '/') {
+			this.refs.nav.open();
+			this.refs.search.focus();
+			e.preventDefault();
+		}
+	},
+
+	handleDetailURL_: function(item) {
+		return this.getDetailURL_(Boolean(item.im), item.blobref);
+	},
+
+	getDetailURL_: function(newUI, blobref) {
+		var detailURL = this.state.currentURL.clone();
+		detailURL.setParameterValue('p', blobref);
+		if (newUI) {
+			detailURL.setParameterValue('newui', '1');
+		}
+		return detailURL;
+	},
+
+	setSearch_: function(query) {
+		var searchURL = this.baseURL_.clone();
+		searchURL.setParameterValue('q', query);
+		this.navigator_.navigate(searchURL);
+	},
+
+	getSelectAsCurrentSetItem_: function() {
+		if (goog.object.getCount(this.state.selection) != 1) {
+			return null;
+		}
+
+		var blobref = goog.object.getAnyKey(this.state.selection);
+		var data = new cam.BlobItemReactData(blobref, this.searchSession_.getCurrentResults().description.meta);
+		if (data.m.camliType != 'permanode') {
+			return null;
+		}
+
+		return cam.NavReact.Item({key:'selectascurrent', iconSrc:'target.svg', onClick:this.handleSelectAsCurrentSet_}, 'Select as current set');
+	},
+
+	getAddToCurrentSetItem_: function() {
+		if (!this.currentSet_ || !goog.object.getAnyKey(this.state.selection)) {
+			return null;
+		}
+		return cam.NavReact.Item({key:'addtoset', iconSrc:'icon_16716.svg', onClick:this.handleAddToSet_}, 'Add to current set');
+	},
+
+	getCreateSetWithSelectionItem_: function() {
+		var numItems = goog.object.getCount(this.state.selection);
+		var label = 'Create set';
+		if (numItems == 1) {
+			label += ' with item';
+		} else if (numItems > 1) {
+			label += goog.string.subs(' with %s items', numItems);
+		}
+		return cam.NavReact.Item({key:'createsetwithselection', iconSrc:'circled_plus.svg', onClick:this.handleCreateSetWithSelection_}, label);
+	},
+
+	getClearSelectionItem_: function() {
+		if (!goog.object.getAnyKey(this.state.selection)) {
+			return null;
+		}
+		return cam.NavReact.Item({key:'clearselection', iconSrc:'clear.svg', onClick:this.handleClearSelection_}, 'Clear selection');
+	},
+
+	getDeleteSelectionItem_: function() {
+		if (!goog.object.getAnyKey(this.state.selection)) {
+			return null;
+		}
+		var numItems = goog.object.getCount(this.state.selection);
+		var label = 'Delete';
+		if (numItems == 1) {
+			label += ' selected item';
+		} else if (numItems > 1) {
+			label += goog.string.subs(' (%s) selected items', numItems);
+		}
+		// TODO(mpl): better icon in another CL, with Font Awesome.
+		return cam.NavReact.Item({key:'deleteselection', iconSrc:'trash.svg', onClick:this.handleDeleteSelection_}, label);
+	},
+
+	handleSelectionChange_: function(newSelection) {
+		this.setState({selection:newSelection});
+	},
+
+	isSearchMode_: function(url) {
+		// This is super finicky. We should improve the URL scheme and give things that are different different paths.
+		var query = url.getQueryData();
+		return query.getCount() == 0 || (query.getCount() == 1 && query.containsKey('q'));
+	},
+
+	isDetailMode_: function(url) {
+		var query = url.getQueryData();
+		return query.containsKey('p') && query.get('newui') == '1';
+	},
+
+	getBlobItemContainer_: function() {
+		if (!this.isSearchMode_(this.state.currentURL)) {
+			return null;
+		}
+
+		return cam.BlobItemContainerReact({
+			key: 'blobitemcontainer',
+			ref: 'blobItemContainer',
+			detailURL: this.handleDetailURL_,
+			history: this.props.history,
+			onSelectionChange: this.handleSelectionChange_,
+			searchSession: this.searchSession_,
+			selection: this.state.selection,
+			style: this.getBlobItemContainerStyle_(),
+			thumbnailSize: this.THUMBNAIL_SIZES_[this.state.thumbnailSizeIndex],
+		});
+	},
+
+	getBlobItemContainerStyle_: function() {
+		// TODO(aa): Constant values can go into CSS when we switch over to react.
+		var style = {
+			left: this.NAV_WIDTH_CLOSED_,
+			overflowX: 'hidden',
+			overflowY: 'scroll',
+			position: 'absolute',
+			top: 0,
+			width: this.getContentWidth_(),
+		};
+
+		var closedWidth = style.width;
+		var openWidth = closedWidth - this.NAV_WIDTH_OPEN_;
+		var openScale = openWidth / closedWidth;
+
+		// TODO(aa): This can move to CSS when the conversion to React is complete.
+		style[cam.reactUtil.getVendorProp('transformOrigin')] = 'right top 0';
+
+		// The 3d transform is important. See: https://code.google.com/p/camlistore/issues/detail?id=284.
+		var scale = this.state.isNavOpen ? openScale : 1;
+		style[cam.reactUtil.getVendorProp('transform')] = goog.string.subs('scale3d(%s, %s, 1)', scale, scale);
+
+		style.height = this.state.isNavOpen ? this.props.availHeight / scale : this.props.availHeight;
+
+		return style;
+	},
+
+	getDetailView_: function() {
+		if (!this.isDetailMode_(this.state.currentURL)) {
+			return null;
+		}
+
+		var searchURL = this.baseURL_.clone();
+		if (this.state.currentURL.getQueryData().containsKey('q')) {
+			searchURL.setParameterValue('q', this.state.currentURL.getParameterValue('q'));
+		}
+
+		var oldURL = this.baseURL_.clone();
+		oldURL.setParameterValue('p', this.state.currentURL.getParameterValue('p'));
+
+		return cam.DetailView({
+			key: 'detailview',
+			blobref: this.state.currentURL.getParameterValue('p'),
+			history: this.props.history,
+			searchSession: this.searchSession_,
+			searchURL: searchURL,
+			oldURL: oldURL,
+			getDetailURL: this.getDetailURL_.bind(this, false),
+			navigator: this.navigator_,
+			keyEventTarget: this.props.eventTarget,
+			width: this.props.availWidth,
+			height: this.props.availHeight,
+		});
+	},
+
+	getContentWidth_: function() {
+		return this.props.availWidth - this.NAV_WIDTH_CLOSED_;
+	},
+});

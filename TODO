@@ -4,6 +4,38 @@ There are two TODO lists. This file (good for airplanes) and the online bug trac
 
 Offline list:
 
+-- stop using the "cond" blob router storage type in genconfig, as
+   well as the /bs-and-index/ "replica" storage type, and just let the
+   index register its own AddReceiveHook like the sync handler
+   (pkg/server/sync.go). But whereas the sync handler only synchronously
+   _enqueues_ the blob to replicate, the indexer should synchronously
+   do the ReceiveBlob (ooo-reindex) on it too before returning.
+   But the sync handler, despite technically only synchronously-enqueueing
+   and being therefore async, is still very fast. It's likely the
+   sync handler will therefore send a ReceiveBlob to the indexer
+   at the ~same time the indexer is already indexing it.  So the indexer
+   should have some dup/merge suppression, and not do double work.
+   singleflight should work. The loser should still consume the
+   source io.Reader body and reply with the same error value.
+
+-- ditch the importer.Interrupt type and pass along a context.Context
+   instead, which has its Done channel for cancelation.
+
+-- be able to put a search (expr or JSON) into camlistore as a blob,
+   and search on it. and then name it with a permanode, and then
+   use a expr search like "named:someset" which looks up someset's
+   current camliContent, fetches it, and then expands into that blob's
+   search.expr or search.Constraint.
+
+-- S3-only mode doesn't work with a local disk index (kvfile) because
+   there's no directory for us to put the kv in.
+
+-- fault injection many more places with pkg/fault. maybe even in all
+   handlers automatically somehow?
+
+-- sync handler's shard validation doesn't retry on error.
+   only reports the errors now.
+
 -- export blobserver.checkHashReader and document it with
    the blob.Fetcher docs.
 
@@ -162,8 +194,6 @@ Offline list:
 -- work on runsit more, so I can start using this more often.  runsit should
    be able to reload itself, and also watch for binaries changing and restart
    when binaries change.  (or symlinks to binaries)
-
--- add gofmt check to "make presubmit". also add "make fmt" target.
 
 -- BUG: osutil paths.go on OS X: should use Library everywhere instead of mix of
    Library and ~/.camlistore?

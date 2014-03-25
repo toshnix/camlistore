@@ -48,7 +48,7 @@ goog.inherits(cam.SearchSession, goog.events.EventTarget);
 // We fire this event when the data changes in any way.
 cam.SearchSession.SEARCH_SESSION_CHANGED = 'search-session-change';
 
-// TODO(aa): This should go away once BlobItemContainer can reconcile changes for itself.
+// TODO(aa): This is only used by BlobItemContainer. Once we switch over to BlobItemContainerReact completely, it can be removed.
 cam.SearchSession.SEARCH_SESSION_CHANGE_TYPE = {
 	NEW: 1,
 	APPEND: 2,
@@ -76,6 +76,10 @@ cam.SearchSession.prototype.getQuery = function() {
 }
 
 // Returns all the data we currently have loaded.
+// It is guaranteed to return the following properties:
+// blobs // non-zero length
+// description
+// description.meta
 cam.SearchSession.prototype.getCurrentResults = function() {
 	return this.data_;
 };
@@ -153,6 +157,9 @@ cam.SearchSession.prototype.searchDone_ = function(changeType, result) {
 	} else {
 		this.data_.blobs = result.blobs;
 		this.data_.description = result.description;
+	}
+	if (!this.data_.blobs || this.data_.blobs.length == 0) {
+		this.resetData_();
 	}
 
 	if (result.continue) {

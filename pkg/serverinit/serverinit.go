@@ -208,6 +208,16 @@ func (hl *handlerLoader) FindHandlerByType(htype string) (prefix string, handler
 	return
 }
 
+func (hl *handlerLoader) AllHandlers() (types map[string]string, handlers map[string]interface{}) {
+	types = make(map[string]string)
+	handlers = make(map[string]interface{})
+	for pfx, config := range hl.config {
+		types[pfx] = config.htype
+		handlers[pfx] = hl.handler[pfx]
+	}
+	return
+}
+
 func (hl *handlerLoader) setupAll() {
 	for prefix := range hl.config {
 		hl.setupHandler(prefix)
@@ -228,6 +238,10 @@ func (hl *handlerLoader) getOrSetup(prefix string) interface{} {
 
 func (hl *handlerLoader) MyPrefix() string {
 	return hl.curPrefix
+}
+
+func (hl *handlerLoader) BaseURL() string {
+	return hl.baseURL
 }
 
 func (hl *handlerLoader) GetStorage(prefix string) (blobserver.Storage, error) {

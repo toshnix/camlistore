@@ -86,9 +86,12 @@ type SyncHandler struct {
 	totalErrors    int64
 	vshards        []string // validation shards. if 0, validation not running
 	vshardDone     int      // shards validated
-	vmissing       int64    // missing blobs found during validat
-	vdestCount     int      // number of blobs seen on dest during validate
-	vdestBytes     int64    // number of blob bytes seen on dest during validate
+	vshardErrs     []string
+	vmissing       int64 // missing blobs found during validat
+	vdestCount     int   // number of blobs seen on dest during validate
+	vdestBytes     int64 // number of blob bytes seen on dest during validate
+	vsrcCount      int   // number of blobs seen on src during validate
+	vsrcBytes      int64 // number of blob bytes seen on src during validate
 }
 
 var (
@@ -234,11 +237,45 @@ func newIdleSyncHandler(fromName, toName string) *SyncHandler {
 }
 
 func (sh *SyncHandler) discoveryMap() map[string]interface{} {
-	// TODO(mpl): more status info
 	return map[string]interface{}{
 		"from":    sh.fromName,
 		"to":      sh.toName,
 		"toIndex": sh.toIndex,
+	}
+}
+
+// syncStatus is a snapshot of the current status, for display by the
+// status handler (status.go) in both JSON and HTML forms.
+type syncStatus struct {
+	sh *SyncHandler
+
+	From           string `json:"from"`
+	FromDesc       string `json:"fromDesc"`
+	To             string `json:"to"`
+	ToDesc         string `json:"toDesc"`
+	DestIsIndex    bool   `json:"destIsIndex,omitempty"`
+	BlobsToCopy    int    `json:"blobsToCopy"`
+	BytesToCopy    int64  `json:"bytesToCopy"`
+	LastCopySecAgo int    `json:"lastCopySecondsAgo,omitempty"`
+}
+
+func (sh *SyncHandler) currentStatus() syncStatus {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	ago := 0
+	if !sh.recentCopyTime.IsZero() {
+		ago = int(time.Now().Sub(sh.recentCopyTime).Seconds())
+	}
+	return syncStatus{
+		sh:             sh,
+		From:           sh.fromName,
+		FromDesc:       storageDesc(sh.from),
+		To:             sh.toName,
+		ToDesc:         storageDesc(sh.to),
+		DestIsIndex:    sh.toIndex,
+		BlobsToCopy:    len(sh.needCopy),
+		BytesToCopy:    sh.bytesRemain,
+		LastCopySecAgo: ago,
 	}
 }
 
@@ -274,12 +311,15 @@ func (sh *SyncHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			if xsrftoken.Valid(token, auth.ProcessRandom(), "user", "runFullValidate") {
 				sh.startFullValidation()
 				http.Redirect(rw, req, "./", http.StatusFound)
+				return
 			}
 		}
 		http.Error(rw, "Bad POST request", http.StatusBadRequest)
 		return
 	}
 
+	// TODO: remove this lock and instead just call currentStatus,
+	// and transition to using that here.
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	f := func(p string, a ...interface{}) {
@@ -311,7 +351,7 @@ func (sh *SyncHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	f("<h2>Validation</h2>")
 	if len(sh.vshards) == 0 {
-		f("Disabled")
+		f("Validation disabled")
 		token := xsrftoken.Generate(auth.ProcessRandom(), "user", "runFullValidate")
 		f("<form method='POST'><input type='hidden' name='mode' value='validate'><input type='hidden' name='token' value='%s'><input type='submit' value='Start validation'></form>", token)
 	} else {
@@ -321,9 +361,14 @@ func (sh *SyncHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			sh.vshardDone,
 			len(sh.vshards),
 			100*float64(sh.vshardDone)/float64(len(sh.vshards)))
-		f("<li>Blobs found missing + fixed: %d</li>", sh.vmissing)
+		f("<li>Source blobs seen: %d</li>", sh.vsrcCount)
+		f("<li>Source bytes seen: %d</li>", sh.vsrcBytes)
 		f("<li>Dest blobs seen: %d</li>", sh.vdestCount)
 		f("<li>Dest bytes seen: %d</li>", sh.vdestBytes)
+		f("<li>Blobs found missing &amp; enqueued: %d</li>", sh.vmissing)
+		if len(sh.vshardErrs) > 0 {
+			f("<li>Validation errors: %s</li>", sh.vshardErrs)
+		}
 		f("</ul>")
 	}
 
@@ -510,11 +555,6 @@ func (sh *SyncHandler) copyBlob(sb blob.SizedRef) (err error) {
 	sh.copying[br] = cs
 	sh.mu.Unlock()
 
-	if strings.Contains(storageDesc(sh.to), "bradfitz-camlistore-pt") {
-		//sh.logf("LIES NOT ACTUALLY COPYING")
-		//return nil
-	}
-
 	if sb.Size > constants.MaxBlobSize {
 		return fmt.Errorf("blob size %d too large; max blob size is %d", sb.Size, constants.MaxBlobSize)
 	}
@@ -651,36 +691,60 @@ func (sh *SyncHandler) runFullValidation() {
 
 func (sh *SyncHandler) validateShardPrefix(pfx string) (err error) {
 	defer func() {
-		if err != nil {
-			sh.logf("Failed to validate prefix %s: %v", pfx, err)
-			return
-		}
 		sh.mu.Lock()
-		sh.vshardDone++
+		if err != nil {
+			errs := fmt.Sprintf("Failed to validate prefix %s: %v", pfx, err)
+			sh.logf("%s", errs)
+			sh.vshardErrs = append(sh.vshardErrs, errs)
+		} else {
+			sh.vshardDone++
+		}
 		sh.mu.Unlock()
 	}()
 	ctx := context.New()
 	defer ctx.Cancel()
 	src, serrc := sh.startValidatePrefix(ctx, pfx, false)
 	dst, derrc := sh.startValidatePrefix(ctx, pfx, true)
-
-	missing := make(chan blob.SizedRef, 8)
-	go blobserver.ListMissingDestinationBlobs(missing, func(blob.Ref) {}, src, dst)
-	for sb := range missing {
-		sh.mu.Lock()
-		sh.vmissing++
-		sh.mu.Unlock()
-		// TODO: stats for missing blobs found.
-		sh.enqueue(sb)
+	srcErr := &chanError{
+		C: serrc,
+		Wrap: func(err error) error {
+			return fmt.Errorf("Error enumerating source %s for validating shard %s: %v", sh.fromName, pfx, err)
+		},
+	}
+	dstErr := &chanError{
+		C: derrc,
+		Wrap: func(err error) error {
+			return fmt.Errorf("Error enumerating target %s for validating shard %s: %v", sh.toName, pfx, err)
+		},
 	}
 
-	if err := <-serrc; err != nil {
-		return fmt.Errorf("Error enumerating source %s for validating shard %s: %v", sh.fromName, pfx, err)
+	missingc := make(chan blob.SizedRef, 8)
+	go blobserver.ListMissingDestinationBlobs(missingc, func(blob.Ref) {}, src, dst)
+
+	var missing []blob.SizedRef
+	for sb := range missingc {
+		missing = append(missing, sb)
 	}
-	if err := <-derrc; err != nil {
-		return fmt.Errorf("Error enumerating target %s for validating shard %s: %v", sh.toName, pfx, err)
+
+	if err := srcErr.Get(); err != nil {
+		return err
 	}
-	return nil
+	if err := dstErr.Get(); err != nil {
+		return err
+	}
+
+	for _, sb := range missing {
+		if enqErr := sh.enqueue(sb); enqErr != nil {
+			if err == nil {
+				err = enqErr
+			}
+		} else {
+			sh.mu.Lock()
+			sh.vmissing += 1
+			sh.mu.Unlock()
+		}
+	}
+	return err
 }
 
 var errNotPrefix = errors.New("sentinel error: hit blob into the next shard")
@@ -697,20 +761,34 @@ func (sh *SyncHandler) startValidatePrefix(ctx *context.Context, pfx string, doD
 	errc := make(chan error, 1)
 	go func() {
 		defer close(c)
+		var last string // last blobref seen; to double check storage's enumeration works correctly.
 		err := blobserver.EnumerateAllFrom(ctx, e, pfx, func(sb blob.SizedRef) error {
+			// Just double-check that the storage target is returning sorted results correctly.
+			brStr := sb.Ref.String()
+			if brStr < pfx {
+				log.Fatalf("Storage target %T enumerate not behaving: %q < requested prefix %q", e, brStr, pfx)
+			}
+			if last != "" && last >= brStr {
+				log.Fatalf("Storage target %T enumerate not behaving: previous %q >= current %q", e, last, brStr)
+			}
+			last = brStr
+
+			// TODO: could add a more efficient method on blob.Ref to do this,
+			// that doesn't involve call String().
+			if !strings.HasPrefix(brStr, pfx) {
+				return errNotPrefix
+			}
 			select {
 			case c <- sb:
-				// TODO: could add a more efficient method on blob.Ref to do this,
-				// that doesn't involve call String().
-				if !strings.HasPrefix(sb.Ref.String(), pfx) {
-					return errNotPrefix
-				}
+				sh.mu.Lock()
 				if doDest {
-					sh.mu.Lock()
 					sh.vdestCount++
 					sh.vdestBytes += int64(sb.Size)
-					sh.mu.Unlock()
+				} else {
+					sh.vsrcCount++
+					sh.vsrcBytes += int64(sb.Size)
 				}
+				sh.mu.Unlock()
 				return nil
 			case <-ctx.Done():
 				return context.ErrCanceled
@@ -718,6 +796,10 @@ func (sh *SyncHandler) startValidatePrefix(ctx *context.Context, pfx string, doD
 		})
 		if err == errNotPrefix {
 			err = nil
+		}
+		if err != nil {
+			// Send a zero value to shut down ListMissingDestinationBlobs.
+			c <- blob.SizedRef{}
 		}
 		errc <- err
 	}()
@@ -902,4 +984,29 @@ func (sh *SyncHandler) EnumerateBlobs(ctx *context.Context, dest chan<- blob.Siz
 
 func (sh *SyncHandler) RemoveBlobs(blobs []blob.Ref) error {
 	panic("Unimplemeted RemoveBlobs")
+}
+
+// chanError is a Future around an incoming error channel of one item.
+// It can also wrap its error in something more descriptive.
+type chanError struct {
+	C        <-chan error
+	Wrap     func(error) error // optional
+	err      error
+	received bool
+}
+
+func (ce *chanError) Set(err error) {
+	if ce.Wrap != nil && err != nil {
+		err = ce.Wrap(err)
+	}
+	ce.err = err
+	ce.received = true
+}
+
+func (ce *chanError) Get() error {
+	if ce.received {
+		return ce.err
+	}
+	ce.Set(<-ce.C)
+	return ce.err
 }

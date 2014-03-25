@@ -41,8 +41,16 @@ func (ld *Loader) FindHandlerByType(handlerType string) (prefix string, handler 
 	panic("NOIMPL")
 }
 
+func (ld *Loader) AllHandlers() (map[string]string, map[string]interface{}) {
+	panic("NOIMPL")
+}
+
 func (ld *Loader) MyPrefix() string {
 	return "/lies/"
+}
+
+func (ld *Loader) BaseURL() string {
+	return "http://localhost:1234"
 }
 
 func (ld *Loader) GetHandlerType(prefix string) string {
