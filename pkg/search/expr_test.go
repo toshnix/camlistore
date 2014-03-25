@@ -104,6 +104,78 @@ var parseExprTests = []struct {
 	},
 
 	{
+		name: "tag with spaces",
+		in:   `tag:"Foo Bar"`,
+		want: &SearchQuery{
+			Constraint: &Constraint{
+				Logical: &LogicalConstraint{
+					Op: "and",
+					A: &Constraint{
+						Permanode: &PermanodeConstraint{
+							SkipHidden: true,
+						},
+					},
+					B: &Constraint{
+						Permanode: &PermanodeConstraint{
+							Attr:       "tag",
+							Value:      "Foo Bar",
+							SkipHidden: true,
+						},
+					},
+				},
+			},
+		},
+	},
+
+	{
+		name: "attribute search",
+		in:   "attr:foo:bar",
+		want: &SearchQuery{
+			Constraint: &Constraint{
+				Logical: &LogicalConstraint{
+					Op: "and",
+					A: &Constraint{
+						Permanode: &PermanodeConstraint{
+							SkipHidden: true,
+						},
+					},
+					B: &Constraint{
+						Permanode: &PermanodeConstraint{
+							Attr:       "foo",
+							Value:      "bar",
+							SkipHidden: true,
+						},
+					},
+				},
+			},
+		},
+	},
+
+	{
+		name: "attribute search with space in value",
+		in:   `attr:foo:"fun bar"`,
+		want: &SearchQuery{
+			Constraint: &Constraint{
+				Logical: &LogicalConstraint{
+					Op: "and",
+					A: &Constraint{
+						Permanode: &PermanodeConstraint{
+							SkipHidden: true,
+						},
+					},
+					B: &Constraint{
+						Permanode: &PermanodeConstraint{
+							Attr:       "foo",
+							Value:      "fun bar",
+							SkipHidden: true,
+						},
+					},
+				},
+			},
+		},
+	},
+
+	{
 		in: "tag:funny",
 		want: &SearchQuery{
 			Constraint: &Constraint{
@@ -145,6 +217,32 @@ var parseExprTests = []struct {
 								CaseInsensitive: true,
 							},
 							SkipHidden: true,
+						},
+					},
+				},
+			},
+		},
+	},
+
+	{
+		in: "childrenof:sha1-f00ba4",
+		want: &SearchQuery{
+			Constraint: &Constraint{
+				Logical: &LogicalConstraint{
+					Op: "and",
+					A: &Constraint{
+						Permanode: &PermanodeConstraint{
+							SkipHidden: true,
+						},
+					},
+					B: &Constraint{
+						Permanode: &PermanodeConstraint{
+							Relation: &RelationConstraint{
+								Relation: "parent",
+								Any: &Constraint{
+									BlobRefPrefix: "sha1-f00ba4",
+								},
+							},
 						},
 					},
 				},
@@ -204,6 +302,7 @@ func TestSplitExpr(t *testing.T) {
 		{"foo bar", []string{"foo", "bar"}},
 		{" foo  bar ", []string{"foo", "bar"}},
 		{`foo:"quoted string" bar`, []string{`foo:quoted string`, "bar"}},
+		{`foo:"quoted \"-containing"`, []string{`foo:quoted "-containing`}},
 	}
 	for _, tt := range tests {
 		got := splitExpr(tt.in)
@@ -225,6 +324,7 @@ func TestTokenizeExpr(t *testing.T) {
 		{" -foo  bar", []string{" ", "-", "foo", " ", "bar"}},
 		{`-"quote"foo`, []string{"-", `"quote"`, "foo"}},
 		{`foo:"quoted string" bar`, []string{"foo:", `"quoted string"`, " ", "bar"}},
+		{`"quoted \"-containing"`, []string{`"quoted \"-containing"`}},
 	}
 	for _, tt := range tests {
 		got := tokenizeExpr(tt.in)

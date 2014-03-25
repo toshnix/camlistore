@@ -136,7 +136,7 @@ type BlobStreamer interface {
 
 // Cache is the minimal interface expected of a blob cache.
 type Cache interface {
-	blob.SeekFetcher
+	blob.Fetcher
 	BlobReceiver
 	BlobStatter
 }
@@ -168,7 +168,7 @@ type BlobRemover interface {
 // Storage is the interface that must be implemented by a blobserver
 // storage type. (e.g. localdisk, s3, encrypt, shard, replica, remote)
 type Storage interface {
-	blob.StreamingFetcher
+	blob.Fetcher
 	BlobReceiver
 	BlobStatter
 	BlobEnumerator
@@ -176,7 +176,7 @@ type Storage interface {
 }
 
 type FetcherEnumerator interface {
-	blob.StreamingFetcher
+	blob.Fetcher
 	BlobEnumerator
 }
 

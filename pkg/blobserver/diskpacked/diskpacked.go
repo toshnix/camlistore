@@ -123,12 +123,12 @@ func New(dir string) (blobserver.Storage, error) {
 		// TODO: detect existing max size from size of files, if obvious,
 		// and set maxSize to that?
 	}
-	return newStorage(dir, maxSize)
+	return newStorage(dir, maxSize, nil)
 }
 
 // newStorage returns a new storage in path root with the given maxFileSize,
 // or defaultMaxFileSize (512MB) if <= 0
-func newStorage(root string, maxFileSize int64) (s *storage, err error) {
+func newStorage(root string, maxFileSize int64, indexConf jsonconfig.Obj) (s *storage, err error) {
 	fi, err := os.Stat(root)
 	if os.IsNotExist(err) {
 		return nil, fmt.Errorf("storage root %q doesn't exist", root)
@@ -139,7 +139,12 @@ func newStorage(root string, maxFileSize int64) (s *storage, err error) {
 	if !fi.IsDir() {
 		return nil, fmt.Errorf("storage root %q exists but is not a directory.", root)
 	}
-	index, err := kvfile.NewStorage(filepath.Join(root, indexKV))
+	var index sorted.KeyValue
+	if len(indexConf) > 0 {
+		index, err = sorted.NewKeyValue(indexConf)
+	} else {
+		index, err = kvfile.NewStorage(filepath.Join(root, indexKV))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -173,12 +178,15 @@ func newStorage(root string, maxFileSize int64) (s *storage, err error) {
 }
 
 func newFromConfig(_ blobserver.Loader, config jsonconfig.Obj) (storage blobserver.Storage, err error) {
-	path := config.RequiredString("path")
-	maxFileSize := config.OptionalInt("maxFileSize", 0)
+	var (
+		path        = config.RequiredString("path")
+		maxFileSize = config.OptionalInt("maxFileSize", 0)
+		indexConf   = config.OptionalObject("metaIndex")
+	)
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	return newStorage(path, int64(maxFileSize))
+	return newStorage(path, int64(maxFileSize), indexConf)
 }
 
 func init() {
@@ -314,11 +322,7 @@ func (s *storage) Close() error {
 	return closeErr
 }
 
-func (s *storage) FetchStreaming(br blob.Ref) (io.ReadCloser, uint32, error) {
-	return s.Fetch(br)
-}
-
-func (s *storage) Fetch(br blob.Ref) (types.ReadSeekCloser, uint32, error) {
+func (s *storage) Fetch(br blob.Ref) (io.ReadCloser, uint32, error) {
 	meta, err := s.meta(br)
 	if err != nil {
 		return nil, 0, err
