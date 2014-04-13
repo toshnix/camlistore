@@ -529,6 +529,18 @@ func (s *storage) meta(br blob.Ref) (m blobMeta, err error) {
 	return
 }
 
+func (s *storage) PutSalt(salt []byte) error {
+	return local.PutSalt(salt, s.root)
+}
+
+func (s *storage) GetSalt() ([]byte, error) {
+	return local.GetSalt(s.root)
+}
+
+func (s *storage) HasSalt() (bool, error) {
+	return local.HasSalt(s.root)
+}
+
 // blobMeta is the blob metadata stored in the index.
 type blobMeta struct {
 	file   int
