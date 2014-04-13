@@ -36,6 +36,28 @@ var ErrCorruptBlob = errors.New("corrupt blob; digest doesn't match")
 // ErrNotImplemented should be returned in methods where the function is not implemented
 var ErrNotImplemented = errors.New("not implemented")
 
+// Salter is the interface for storing, retrieving and querying salts
+// for the encrypt blobserver.
+type Salter interface {
+	// PutSalt must write a file somewhere in the blobserver
+	// containing exactly the bytes in the argument. If the
+	// operation is not successful, PutSalt must return
+	// non-nil. Composite or wrapped storages must store the same
+	// salt in all the underlying blobstores.
+	PutSalt([]byte) error
+	// GetSalt must return all of bytes in the salt earlier stored
+	// with PutSalt. If the salt cannot be read in full for any
+	// reason, or if it does not exist, a non-nil error must be
+	// returned. Additionally, composite or wrapped storages must
+	// return a non-nil error if the same salt is not found in all
+	// the underlying storages.
+	GetSalt() ([]byte, error)
+	// HasSalt should return true if the blobserver already has
+	// *non-empty* salt data file, and false otherwise. If any error
+	// occurs, HasSalt should return false and a non-nil error.
+	HasSalt() (bool, error)
+}
+
 // BlobReceiver is the interface for receiving
 type BlobReceiver interface {
 	// ReceiveBlob accepts a newly uploaded blob and writes it to

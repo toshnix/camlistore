@@ -44,6 +44,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +56,7 @@ import (
 	"camlistore.org/pkg/jsonconfig"
 	"camlistore.org/pkg/sorted"
 	"camlistore.org/pkg/types"
+	"camlistore.org/third_party/code.google.com/p/go.crypto/scrypt"
 )
 
 // Compaction constants
@@ -74,9 +76,6 @@ $ find /tmp/camliroot-$USER/port3179/encblob/
 $ ./dev-camtool sync --src=http://localhost:3179/enc/ --dest=stdout
 
 */
-
-// TODO:
-// http://godoc.org/code.google.com/p/go.crypto/scrypt
 
 type storage struct {
 	// index is the meta index.
@@ -539,6 +538,147 @@ func parseMetaValue(v string) (mv *metaValue, err error) {
 	return mv, nil
 }
 
+func passphraseToKey(pass, salt []byte) []byte {
+	// The parameters used for key generation are those
+	// recommended for long-term storage encryption in the
+	// presentation:
+	// https://www.tarsnap.com/scrypt/scrypt-slides.pdf : N=2^20,
+	// r=8, p=1. With these parameters, a Core i5 Intel Nehalem
+	// machine takes ~ 7 seconds to generate the key, and about
+	// 1GB of memory.
+	log.Printf("Generating encryption key from passphrase...")
+	start := time.Now()
+	b, err := scrypt.Key(pass, salt, 1048576, 8, 1, 16)
+	if err != nil {
+		// Should never fail if the magic constants in the
+		// function call above are correct.
+		panic(err)
+	}
+	log.Printf("Encryption key generated from passphrase in %v seconds",
+		time.Since(start).Seconds())
+
+	// scrypt.Key() generates 1GB of garbage that the GC will take
+	// a long time to give back to the OS. To minimize on
+	// middle-term memory usage (and not surprise the user), we
+	// use this hack. This function is called once during
+	// initialization, so this shouldn't affect
+	// performance. Without this, we end up consuming >1GB for
+	// more than an half hour or so, an order of magnitude more than the
+	// usual steady-state requirement.
+	debug.FreeOSMemory()
+
+	return b
+}
+
+// TODO: (marete) Use blob streaming when that is implemented.
+func bsIsEmpty(bs blobserver.Storage) (bool, error) {
+	ctx := context.New()
+	ch := make(chan blob.SizedRef, 1)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- bs.EnumerateBlobs(ctx, ch, "", 1)
+	}()
+
+	_, ok := <-ch
+	err := <-errCh
+
+	if err != nil {
+		return false, err
+	}
+
+	return !ok, nil
+}
+
+// To keep things simple, we require both storages to contain the same
+// salt, though that is not strictly necessary.
+func getSalt(meta blobserver.Storage, blobs blobserver.Storage) ([]byte, error) {
+	// Both storages must be blobserver.Salters
+	metaSalter, ok := meta.(blobserver.Salter)
+	if !ok {
+		return nil, fmt.Errorf("Meta storage does not implement the blobserver.Salter interface")
+	}
+	blobsSalter, ok := blobs.(blobserver.Salter)
+	if !ok {
+		return nil, fmt.Errorf("Blob storage does not implement the blobserver.Salter interface")
+	}
+
+	metaHasSalt, err := metaSalter.HasSalt()
+	if err != nil {
+		return nil, err
+	}
+	blobsHasSalt, err := blobsSalter.HasSalt()
+	if err != nil {
+		return nil, err
+	}
+
+	var metaSalt []byte
+	var blobsSalt []byte
+
+	if metaHasSalt {
+		metaSalt, err = metaSalter.GetSalt()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if blobsHasSalt {
+		blobsSalt, err = blobsSalter.GetSalt()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	switch {
+	case metaHasSalt && blobsHasSalt:
+		if bytes.Equal(metaSalt, blobsSalt) {
+			return metaSalt, nil
+		}
+		return nil, fmt.Errorf("Salts for meta and blobs storages do not match")
+	case !metaHasSalt && !blobsHasSalt:
+		// We will generate the salt, but we only do this if
+		// the blobstorage is empty because if it is not, we
+		// do not know how the key encrypting the blobs was
+		// generated.
+		errBSNotEmpty := errors.New("Cannot generate new salt for non-empty blobstore")
+		metaEmpty, err := bsIsEmpty(meta)
+		if err != nil {
+			return nil, err
+		}
+		blobsEmpty, err := bsIsEmpty(blobs)
+		if err != nil {
+			return nil, err
+		}
+		if !metaEmpty || !blobsEmpty {
+			return nil, errBSNotEmpty
+		}
+
+		// We use a 128 bit random salt.
+		salt := make([]byte, 16)
+		_, err = rand.Reader.Read(salt)
+		if err != nil {
+			return nil, err
+		}
+
+		// Finally, store the generated salt in both
+		// blobstores and return it.
+		err = metaSalter.PutSalt(salt)
+		if err != nil {
+			return nil, err
+		}
+		err = blobsSalter.PutSalt(salt)
+		if err != nil {
+			return nil, err
+		}
+
+		return salt, nil
+	default:
+		return nil, fmt.Errorf("Disimilar salt configuration not supported")
+
+	}
+}
+
+var dummyCloser io.Closer = ioutil.NopCloser(nil)
+
 func init() {
 	blobserver.RegisterStorageConstructor("encrypt", blobserver.StorageConstructor(newFromConfig))
 }
@@ -552,27 +692,8 @@ func newFromConfig(ld blobserver.Loader, config jsonconfig.Obj) (bs blobserver.S
 		return nil, errors.New("Use of the 'encrypt' target without the proper I_AGREE value.")
 	}
 
-	key := config.OptionalString("key", "")
-	keyFile := config.OptionalString("keyFile", "")
-	var keyb []byte
-	switch {
-	case key != "":
-		keyb, err = hex.DecodeString(key)
-		if err != nil || len(keyb) != 16 {
-			return nil, fmt.Errorf("The 'key' parameter must be 16 bytes of 32 hex digits. (currently fixed at AES-128)")
-		}
-	case keyFile != "":
-		// TODO: check that keyFile's unix permissions aren't too permissive.
-		keyb, err = ioutil.ReadFile(keyFile)
-		if err != nil {
-			return nil, fmt.Errorf("Reading key file %v: %v", keyFile, err)
-		}
-	}
 	blobStorage := config.RequiredString("blobs")
 	metaStorage := config.RequiredString("meta")
-	if err := config.Validate(); err != nil {
-		return nil, err
-	}
 
 	sto.index, err = sorted.NewKeyValue(metaConf)
 	if err != nil {
@@ -586,6 +707,76 @@ func newFromConfig(ld blobserver.Loader, config jsonconfig.Obj) (bs blobserver.S
 	sto.meta, err = ld.GetStorage(metaStorage)
 	if err != nil {
 		return
+	}
+
+	// TODO (marete): Specify a flexible mechanism to prompt the
+	// user (that can be changed by a user of the package) and
+	// implement a default that uses pinentry.
+	passPhrase := config.OptionalString("passPhrase", "")
+	passFile := config.OptionalString("passFile", "")
+
+	// For now, we support the old raw AES key and keyFile
+	// mechanism, and it takes precedence over the new scrypt key
+	// generation mechanism from a password (but is deprecated).
+	key := config.OptionalString("key", "")
+	keyFile := config.OptionalString("keyFile", "")
+
+	var keyb []byte
+	var salt []byte
+
+	switch {
+	case key != "" || keyFile != "":
+		log.Println("encrypt: A raw key or key file has been provided. This mechanism is deprecated. Please define a passphrase (via \"passPhrase\") or a file with a passphrase (via \"passFile\") in the configuration")
+		fallthrough
+	case key != "":
+		keyb, err = hex.DecodeString(key)
+		if err != nil || len(keyb) != 16 {
+			return nil, fmt.Errorf("The 'key' parameter must be 16 bytes of 32 hex digits. (currently fixed at AES-128)")
+		}
+	case keyFile != "":
+		y, err := readableByOwnerOnly(keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt: Error checking if the key file %s is readable only the owner: %v", keyFile, err)
+		}
+		if y == false {
+			return nil, fmt.Errorf("encrypt: Key file %s must only be readable by its owner", keyFile)
+		}
+		keyb, err = ioutil.ReadFile(keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt: Error %v trying to read key file %s", err, keyFile)
+		}
+	case passPhrase != "" || passFile != "":
+		salt, err = getSalt(sto.meta, sto.blobs)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt: Error %v getting or generating new salt for storage engines", err)
+		}
+		fallthrough
+	case passPhrase != "":
+		keyb = passphraseToKey([]byte(passPhrase), salt)
+	case passFile != "":
+		y, err := readableByOwnerOnly(passFile)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt: Error checking if the passphrase file %s is readable only the owner: %v", passFile, err)
+		}
+		if y == false {
+			return nil, fmt.Errorf("encrypt: Passphrase file %s must only be readable by its owner", passFile)
+		}
+
+		all, err := ioutil.ReadFile(passFile)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt: Error %v reading passphrase from file %s", err, passFile)
+		}
+
+		// We take the passphrase to be to contents of
+		// passFile with all leading and trailing whitespace
+		// (as defined by unicode) removed.
+		pp := bytes.TrimSpace(all)
+
+		keyb = passphraseToKey(pp, salt)
+	}
+
+	if err := config.Validate(); err != nil {
+		return nil, err
 	}
 
 	if keyb == nil {
