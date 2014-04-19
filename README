@@ -1,9 +1,8 @@
-Camlistore is your personal storage system for life.
+This repository integrates Camlistore's master branch with all changes
+made by us here at Toshnix Systems Limited (and probably others) that
+are not yet upstream in the main Camlistore repo.
 
-It's a way to store, sync, share, model and back up content.
-
-It stands for "Content-Addressable Multi-Layer Indexed Storage", for
-lack of a better name.  For more, see:
+For more information about Camlistore, see:
 
      http://camlistore.org/
      http://camlistore.org/docs/
