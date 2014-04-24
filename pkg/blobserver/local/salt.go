@@ -76,7 +76,6 @@ func GetSalt(dirRoot string) ([]byte, error) {
 	}
 
 	return bin, nil
-
 }
 
 //Implements HasSalt in the blobserver.Salter interface.
