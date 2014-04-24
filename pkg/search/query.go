@@ -601,6 +601,11 @@ type PermanodeConstraint struct {
 	// child, or progeny.
 	Relation *RelationConstraint `json:"relation,omitempty"`
 
+	// Location optionally restricts matches to permanodes having
+	// this location. This only affects permanodes with a known
+	// type to have an lat/long location.
+	Location *LocationConstraint `json:"location,omitempty"`
+
 	// Continue is for internal use.
 	Continue *PermanodeContinueConstraint `json:"-"`
 
@@ -1120,7 +1125,7 @@ var numPermanodeFields = reflect.TypeOf(PermanodeConstraint{}).NumField()
 // hasValueConstraint returns true if one or more constraints that check an attribute's value are set.
 func (c *PermanodeConstraint) hasValueConstraint() bool {
 	// If a field has been added or removed, update this after adding the new field to the return statement if necessary.
-	const expectedFields = 14
+	const expectedFields = 15
 	if numPermanodeFields != expectedFields {
 		panic(fmt.Sprintf("PermanodeConstraint field count changed (now %v rather than %v)", numPermanodeFields, expectedFields))
 	}
@@ -1169,11 +1174,17 @@ func (c *PermanodeConstraint) blobMatches(s *search, br blob.Ref, bm camtypes.Bl
 	}
 
 	if c.SkipHidden && corpus != nil {
-		vals := corpus.AppendPermanodeAttrValuesLocked(s.ss[:0], br, "camliDefVis", time.Time{}, s.h.owner)
-		for _, v := range vals {
-			if v == "hide" {
-				return false, nil
-			}
+		defVis := corpus.PermanodeAttrValueLocked(br, "camliDefVis", c.At, s.h.owner)
+		if defVis == "hide" {
+			return false, nil
+		}
+		nodeType := corpus.PermanodeAttrValueLocked(br, "camliNodeType", c.At, s.h.owner)
+		if nodeType == "foursquare.com:venue" {
+			// TODO: temporary. remove this, or change
+			// when/where (time) we show these.  But these
+			// are flooding my results and I'm about to
+			// demo this.
+			return false, nil
 		}
 	}
 
@@ -1203,6 +1214,16 @@ func (c *PermanodeConstraint) blobMatches(s *search, br blob.Ref, bm camtypes.Bl
 		ok, err := rc.match(s, br, c.At)
 		if !ok || err != nil {
 			return ok, err
+		}
+	}
+
+	if c.Location != nil {
+		if corpus == nil {
+			return false, nil
+		}
+		lat, long, ok := corpus.PermanodeLatLongLocked(br, c.At)
+		if !ok || !c.Location.matchesLatLong(lat, long) {
+			return false, nil
 		}
 	}
 
