@@ -1,6 +1,14 @@
 This repository integrates Camlistore's master branch with all changes
-made by us here at Toshnix Systems Limited (and probably others) that
-are not yet upstream in the main Camlistore repo.
+made by us here at Toshnix Systems Limited that are not yet upstream
+in the main Camlistore repo (see links below).
+
+So the *master* branch on this repo this is just an integration branch
+of CLs that we are interested in testing together, which CLs we have
+already submitted for review for integration into the main Camlistore
+repo, but which are not yet upstream (At least, that is the basic
+idea).
+
+
 
 For more information about Camlistore, see:
 
