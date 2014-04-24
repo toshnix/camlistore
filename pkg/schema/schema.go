@@ -350,17 +350,16 @@ func stringFromMixedArray(parts []interface{}) string {
 }
 
 // mixedArrayFromString is the inverse of stringFromMixedArray. It
-// splits a string containing zero or more UTF8 string segments and
-// zero or more non-UTF8 bytes into a slice whose elements are those
-// UTF8 string segments concatenated with the non-UTF8 bytes, in the
-// order that the function finds them, and returns the possibly
-// mixed-type slice in mixedName.
+// splits a string to a series of alternating UTF-8 string segments
+// and non-UTF-8 []byte elements.
 func mixedArrayFromString(s string) (mixedName []interface{}) {
+	if utf8.ValidString(s) {
+		return append(mixedName, s)
+	}
+
 	buf := []byte(s)
-	var part interface{}
 	for len(buf) > 0 {
-		var offset int
-		part, offset = nextStringOrByte(buf)
+		part, offset := nextStringOrByte(buf)
 		buf = buf[offset:]
 		mixedName = append(mixedName, part)
 	}
@@ -368,16 +367,13 @@ func mixedArrayFromString(s string) (mixedName []interface{}) {
 	return
 }
 
-// In the `part' return parameter, nextStringOrByte returns the
-// longest UTF8 string segment that starts at the beginning of the
-// byte slice b, if b begins with a valid UTF8-encoded
-// character. Otherwise, it returns the first byte in b. In all cases,
-// the second return parameter (`consumed') contains the number of
-// bytes in b that encode the returned string or byte.
+// nextStringOrByte returns either the longest UTF-8 string prefix or
+// the the first byte of b, if b does not contain a valid UTF-8
+// prefuix. consumed will be the length of the returned string or 1
+// when b does not contain a valid UTF-8 prefix.
 func nextStringOrByte(b []byte) (part interface{}, consumed int) {
 	n := 0
-	var s []byte
-	c := make([]byte, 4)
+	s := make([]byte, 0, 64)
 	for n < len(b) {
 		r, size := utf8.DecodeRune(b[n:])
 		if r == utf8.RuneError {
@@ -389,8 +385,11 @@ func nextStringOrByte(b []byte) (part interface{}, consumed int) {
 			return b[n], 1
 		}
 		n += size // We have consumed size bytes
-		w := utf8.EncodeRune(c, r)
-		s = append(s, c[:w]...)
+		rl := utf8.RuneLen(r)
+		for i := 0; i < rl; i++ {
+			s = append(s, 0)
+		}
+		utf8.EncodeRune(s[(len(s)-rl):], r)
 	}
 
 	return string(s), n
