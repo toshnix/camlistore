@@ -154,6 +154,9 @@ func testConfig(name string, t *testing.T) {
 	if err != nil {
 		return
 	}
+	if err := (&jsonconfig.ConfigParser{}).CheckTypes(lowLevelConf.Obj); err != nil {
+		t.Fatalf("Error while parsing low-level conf generated from %v: %v", name, err)
+	}
 
 	wantFile := strings.Replace(name, ".json", "-want.json", 1)
 	wantConf, err := configParser().ReadFile(wantFile)
@@ -163,17 +166,17 @@ func testConfig(name string, t *testing.T) {
 	var got, want bytes.Buffer
 	prettyPrint(t, &got, lowLevelConf.Obj, 0)
 	prettyPrint(t, &want, wantConf, 0)
-	if got.String() != want.String() {
-		if *updateGolden {
-			contents, err := json.MarshalIndent(lowLevelConf.Obj, "", "\t")
-			if err != nil {
-				t.Fatal(err)
-			}
-			contents = canonicalizeGolden(t, contents)
-			if err := ioutil.WriteFile(wantFile, contents, 0644); err != nil {
-				t.Fatal(err)
-			}
+	if *updateGolden {
+		contents, err := json.MarshalIndent(lowLevelConf.Obj, "", "\t")
+		if err != nil {
+			t.Fatal(err)
 		}
+		contents = canonicalizeGolden(t, contents)
+		if err := ioutil.WriteFile(wantFile, contents, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got.String() != want.String() {
 		t.Errorf("test %s configurations differ.\nGot:\n%s\nWant:\n%s\nDiff (want -> got), %s:\n%s",
 			name, &got, &want, name, test.Diff(want.Bytes(), got.Bytes()))
 	}

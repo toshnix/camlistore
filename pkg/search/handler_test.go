@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-     http://www.apache.org/licenses/LICENSE-2.0
+	 http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,14 +17,17 @@ limitations under the License.
 package search_test
 
 import (
-	. "camlistore.org/pkg/search"
-
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +36,7 @@ import (
 	"camlistore.org/pkg/index"
 	"camlistore.org/pkg/index/indextest"
 	"camlistore.org/pkg/osutil"
+	. "camlistore.org/pkg/search"
 	"camlistore.org/pkg/test"
 )
 
@@ -61,10 +65,15 @@ type handlerTest struct {
 	// FakeIndex is not used.
 	setup func(fi *test.FakeIndex) index.Interface
 
-	name  string // test name
-	query string // the HTTP path + optional query suffix after "camli/search/"
+	name     string // test name
+	query    string // the HTTP path + optional query suffix after "camli/search/"
+	postBody string // if non-nil, a POST request
 
 	want map[string]interface{}
+	// wantDescribed is a list of blobref strings that should've been
+	// described in meta. If want is nil and this is non-zero length,
+	// want is ignored.
+	wantDescribed []string
 }
 
 var owner = blob.MustParse("abcown-123")
@@ -87,8 +96,8 @@ func addToClockOrigin(d time.Duration) string {
 func handlerDescribeTestSetup(fi *test.FakeIndex) index.Interface {
 	pn := blob.MustParse("perma-123")
 	fi.AddMeta(pn, "permanode", 123)
-	fi.AddClaim(owner, pn, "set-attribute", "camliContent", "foo-232")
-	fi.AddMeta(blob.MustParse("foo-232"), "", 878)
+	fi.AddClaim(owner, pn, "set-attribute", "camliContent", "fakeref-232")
+	fi.AddMeta(blob.MustParse("fakeref-232"), "", 878)
 
 	// Test deleting all attributes
 	fi.AddClaim(owner, pn, "add-attribute", "wont-be-present", "x")
@@ -107,9 +116,34 @@ func handlerDescribeTestSetup(fi *test.FakeIndex) index.Interface {
 func handlerDescribeTestSetupWithImage(fi *test.FakeIndex) index.Interface {
 	handlerDescribeTestSetup(fi)
 	pn := blob.MustParse("perma-123")
-	imageRef := blob.MustParse("foo-789")
+	imageRef := blob.MustParse("fakeref-789")
 	fi.AddMeta(imageRef, "", 789)
 	fi.AddClaim(owner, pn, "set-attribute", "camliContentImage", imageRef.String())
+	return fi
+}
+
+// extends handlerDescribeTestSetup but adds various embedded references to other nodes.
+func handlerDescribeTestSetupWithEmbeddedRefs(fi *test.FakeIndex) index.Interface {
+	handlerDescribeTestSetup(fi)
+	pn := blob.MustParse("perma-123")
+	c1 := blob.MustParse("fakeref-01")
+	c2 := blob.MustParse("fakeref-02")
+	c3 := blob.MustParse("fakeref-03")
+	c4 := blob.MustParse("fakeref-04")
+	c5 := blob.MustParse("fakeref-05")
+	c6 := blob.MustParse("fakeref-06")
+	fi.AddMeta(c1, "", 1)
+	fi.AddMeta(c2, "", 2)
+	fi.AddMeta(c3, "", 3)
+	fi.AddMeta(c4, "", 4)
+	fi.AddMeta(c5, "", 5)
+	fi.AddMeta(c6, "", 6)
+	fi.AddClaim(owner, pn, "set-attribute", c1.String(), "foo")
+	fi.AddClaim(owner, pn, "set-attribute", "foo,"+c2.String()+"=bar", "foo")
+	fi.AddClaim(owner, pn, "set-attribute", "foo:"+c3.String()+"?bar,"+c4.String(), "foo")
+	fi.AddClaim(owner, pn, "set-attribute", "foo", c5.String())
+	fi.AddClaim(owner, pn, "add-attribute", "bar", "baz")
+	fi.AddClaim(owner, pn, "add-attribute", "bar", "monkey\n"+c6.String())
 	return fi
 }
 
@@ -117,7 +151,7 @@ var handlerTests = []handlerTest{
 	{
 		name:  "describe-missing",
 		setup: func(fi *test.FakeIndex) index.Interface { return fi },
-		query: "describe?blobref=eabc-555",
+		query: "describe?blobref=eabfakeref-0555",
 		want: parseJSON(`{
 			"meta": {
 			}
@@ -127,14 +161,14 @@ var handlerTests = []handlerTest{
 	{
 		name: "describe-jpeg-blob",
 		setup: func(fi *test.FakeIndex) index.Interface {
-			fi.AddMeta(blob.MustParse("abc-555"), "", 999)
+			fi.AddMeta(blob.MustParse("abfakeref-0555"), "", 999)
 			return fi
 		},
-		query: "describe?blobref=abc-555",
+		query: "describe?blobref=abfakeref-0555",
 		want: parseJSON(`{
 			"meta": {
-				"abc-555": {
-					"blobRef":  "abc-555",
+				"abfakeref-0555": {
+					"blobRef":  "abfakeref-0555",
 					"size":     999
 				}
 			}
@@ -147,8 +181,8 @@ var handlerTests = []handlerTest{
 		query: "describe?blobref=perma-123",
 		want: parseJSON(`{
 			"meta": {
-				"foo-232": {
-					"blobRef":  "foo-232",
+				"fakeref-232": {
+					"blobRef":  "fakeref-232",
 					"size":     878
 				},
 				"perma-123": {
@@ -157,7 +191,7 @@ var handlerTests = []handlerTest{
 					"size":      123,
 					"permanode": {
 						"attr": {
-							"camliContent": [ "foo-232" ],
+							"camliContent": [ "fakeref-232" ],
 							"only-delete-b": [ "a", "c" ]
 						},
 						"modtime": "` + addToClockOrigin(8*time.Second) + `"
@@ -173,12 +207,12 @@ var handlerTests = []handlerTest{
 		query: "describe?blobref=perma-123",
 		want: parseJSON(`{
 			"meta": {
-				"foo-232": {
-					"blobRef":  "foo-232",
+				"fakeref-232": {
+					"blobRef":  "fakeref-232",
 					"size":     878
 				},
-				"foo-789": {
-					"blobRef":  "foo-789",
+				"fakeref-789": {
+					"blobRef":  "fakeref-789",
 					"size":     789
 				},
 				"perma-123": {
@@ -187,11 +221,80 @@ var handlerTests = []handlerTest{
 					"size":      123,
 					"permanode": {
 						"attr": {
-							"camliContent": [ "foo-232" ],
-							"camliContentImage": [ "foo-789" ],
+							"camliContent": [ "fakeref-232" ],
+							"camliContentImage": [ "fakeref-789" ],
 							"only-delete-b": [ "a", "c" ]
 						},
 						"modtime": "` + addToClockOrigin(9*time.Second) + `"
+					}
+				}
+			}
+		}`),
+	},
+
+	{
+		name:  "describe-permanode-embedded-references",
+		setup: handlerDescribeTestSetupWithEmbeddedRefs,
+		query: "describe?blobref=perma-123",
+		want: parseJSON(`{
+			"meta": {
+				"fakeref-01": {
+				  "blobRef": "fakeref-01",
+				  "size": 1
+				},
+				"fakeref-02": {
+				  "blobRef": "fakeref-02",
+				  "size": 2
+				},
+				"fakeref-03": {
+				  "blobRef": "fakeref-03",
+				  "size": 3
+				},
+				"fakeref-04": {
+				  "blobRef": "fakeref-04",
+				  "size": 4
+				},
+				"fakeref-05": {
+				  "blobRef": "fakeref-05",
+				  "size": 5
+				},
+				"fakeref-06": {
+				  "blobRef": "fakeref-06",
+				  "size": 6
+				},
+				"fakeref-232": {
+					"blobRef":  "fakeref-232",
+					"size":     878
+				},
+				"perma-123": {
+					"blobRef":   "perma-123",
+					"camliType": "permanode",
+					"size":      123,
+					"permanode": {
+						"attr": {
+							"bar": [
+								"baz",
+								"monkey\nfakeref-06"
+							],
+							"fakeref-01": [
+								"foo"
+							],
+							"camliContent": [
+								"fakeref-232"
+							],
+							"foo": [
+								"fakeref-05"
+							],
+							"foo,fakeref-02=bar": [
+								"foo"
+							],
+							"foo:fakeref-03?bar,fakeref-04": [
+								"foo"
+							],
+							"camliContent": [ "fakeref-232" ],
+							"only-delete-b": [ "a", "c" ]
+						},
+						"modtime": "` + addToClockOrigin(14*time.Second) + `"
 					}
 				}
 			}
@@ -204,8 +307,8 @@ var handlerTests = []handlerTest{
 		query: "describe?blobref=perma-123&at=" + addToClockOrigin(3*time.Second),
 		want: parseJSON(`{
 			"meta": {
-				"foo-232": {
-					"blobRef":  "foo-232",
+				"fakeref-232": {
+					"blobRef":  "fakeref-232",
 					"size":     878
 				},
 				"perma-123": {
@@ -214,7 +317,7 @@ var handlerTests = []handlerTest{
 					"size":      123,
 					"permanode": {
 						"attr": {
-							"camliContent": [ "foo-232" ],
+							"camliContent": [ "fakeref-232" ],
 							"wont-be-present": [ "x", "y" ]
 						},
 						"modtime": "` + addToClockOrigin(3*time.Second) + `"
@@ -230,31 +333,31 @@ var handlerTests = []handlerTest{
 		setup: func(fi *test.FakeIndex) index.Interface {
 			pn := blob.MustParse("perma-123")
 			fi.AddMeta(pn, "permanode", 123)
-			fi.AddClaim(owner, pn, "set-attribute", "camliPath:foo", "bar-123")
+			fi.AddClaim(owner, pn, "set-attribute", "camliPath:foo", "fakeref-123")
 
-			fi.AddMeta(blob.MustParse("bar-123"), "", 123)
+			fi.AddMeta(blob.MustParse("fakeref-123"), "", 123)
 			return fi
 		},
 		query: "describe?blobref=perma-123",
 		want: parseJSON(`{
   "meta": {
-    "bar-123": {
-      "blobRef": "bar-123",
-      "size": 123
-    },
-    "perma-123": {
-      "blobRef": "perma-123",
-      "camliType": "permanode",
-      "size": 123,
-      "permanode": {
-        "attr": {
-          "camliPath:foo": [
-            "bar-123"
-          ]
-        },
+	"fakeref-123": {
+	  "blobRef": "fakeref-123",
+	  "size": 123
+	},
+	"perma-123": {
+	  "blobRef": "perma-123",
+	  "camliType": "permanode",
+	  "size": 123,
+	  "permanode": {
+		"attr": {
+		  "camliPath:foo": [
+			"fakeref-123"
+		  ]
+		},
 		"modtime": "` + addToClockOrigin(1*time.Second) + `"
-      }
-    }
+	  }
+	}
   }
 }`),
 	},
@@ -274,23 +377,23 @@ var handlerTests = []handlerTest{
 		},
 		query: "recent",
 		want: parseJSON(`{
-                "recent": [
-                    {"blobref": "sha1-7ca7743e38854598680d94ef85348f2c48a44513",
-                     "modtime": "2011-11-28T01:32:37.000123456Z",
-                     "owner": "sha1-ad87ca5c78bd0ce1195c46f7c98e6025abbaf007"}
-                ],
-                "meta": {
-                      "sha1-7ca7743e38854598680d94ef85348f2c48a44513": {
+				"recent": [
+					{"blobref": "sha1-7ca7743e38854598680d94ef85348f2c48a44513",
+					 "modtime": "2011-11-28T01:32:37.000123456Z",
+					 "owner": "sha1-ad87ca5c78bd0ce1195c46f7c98e6025abbaf007"}
+				],
+				"meta": {
+					  "sha1-7ca7743e38854598680d94ef85348f2c48a44513": {
 		 "blobRef": "sha1-7ca7743e38854598680d94ef85348f2c48a44513",
 		 "camliType": "permanode",
-                 "permanode": {
-                   "attr": { "title": [ "Some title" ] },
+				 "permanode": {
+				   "attr": { "title": [ "Some title" ] },
 					"modtime": "` + addToClockOrigin(1*time.Second) + `"
-                 },
-                 "size": 534
-                     }
-                 }
-               }`),
+				 },
+				 "size": 534
+					 }
+				 }
+			   }`),
 	},
 
 	// Test recent permanode of a file
@@ -324,41 +427,41 @@ var handlerTests = []handlerTest{
 		},
 		query: "recent",
 		want: parseJSON(`{
-                "recent": [
-                    {"blobref": "sha1-7ca7743e38854598680d94ef85348f2c48a44513",
-                     "modtime": "2011-11-28T01:32:37.000123456Z",
-                     "owner": "sha1-ad87ca5c78bd0ce1195c46f7c98e6025abbaf007"}
-                ],
-                "meta": {
-                      "sha1-7ca7743e38854598680d94ef85348f2c48a44513": {
+				"recent": [
+					{"blobref": "sha1-7ca7743e38854598680d94ef85348f2c48a44513",
+					 "modtime": "2011-11-28T01:32:37.000123456Z",
+					 "owner": "sha1-ad87ca5c78bd0ce1195c46f7c98e6025abbaf007"}
+				],
+				"meta": {
+					  "sha1-7ca7743e38854598680d94ef85348f2c48a44513": {
 		 "blobRef": "sha1-7ca7743e38854598680d94ef85348f2c48a44513",
 		 "camliType": "permanode",
-                 "permanode": {
-		        "attr": {
-		          "camliContent": [
-		            "sha1-e3f0ee86622dda4d7e8a4a4af51117fb79dbdbbb"
-		          ]
-		        },
+				 "permanode": {
+				"attr": {
+				  "camliContent": [
+					"sha1-e3f0ee86622dda4d7e8a4a4af51117fb79dbdbbb"
+				  ]
+				},
 				"modtime": "` + addToClockOrigin(1*time.Second) + `"
-		      },
-                 "size": 534
-                     },
-		    "sha1-e3f0ee86622dda4d7e8a4a4af51117fb79dbdbbb": {
-		      "blobRef": "sha1-e3f0ee86622dda4d7e8a4a4af51117fb79dbdbbb",
-		      "camliType": "file",
-		      "size": 184,
-		      "file": {
-		        "fileName": "dude.jpg",
-		        "size": 1932,
-		        "mimeType": "image/jpeg"
-		      },
-		      "image": {
-		        "width": 50,
-		        "height": 100
-		      }
-		    }
-                 }
-               }`),
+			  },
+				 "size": 534
+					 },
+			"sha1-e3f0ee86622dda4d7e8a4a4af51117fb79dbdbbb": {
+			  "blobRef": "sha1-e3f0ee86622dda4d7e8a4a4af51117fb79dbdbbb",
+			  "camliType": "file",
+			  "size": 184,
+			  "file": {
+				"fileName": "dude.jpg",
+				"size": 1932,
+				"mimeType": "image/jpeg"
+			  },
+			  "image": {
+				"width": 50,
+				"height": 100
+			  }
+			}
+				 }
+			   }`),
 	},
 
 	// Test recent permanode of a file, in a collection
@@ -397,58 +500,58 @@ var handlerTests = []handlerTest{
 		query: "recent",
 		want: parseJSON(`{
 		  "recent": [
-		    {
-		      "blobref": "sha1-3c8b5d36bd4182c6fe802984832f197786662ccf",
-		      "modtime": "2011-11-28T01:32:38.000123456Z",
-		      "owner": "sha1-ad87ca5c78bd0ce1195c46f7c98e6025abbaf007"
-		    },
-		    {
-		      "blobref": "sha1-7ca7743e38854598680d94ef85348f2c48a44513",
-		      "modtime": "2011-11-28T01:32:37.000123456Z",
-		      "owner": "sha1-ad87ca5c78bd0ce1195c46f7c98e6025abbaf007"
-		    }
+			{
+			  "blobref": "sha1-3c8b5d36bd4182c6fe802984832f197786662ccf",
+			  "modtime": "2011-11-28T01:32:38.000123456Z",
+			  "owner": "sha1-ad87ca5c78bd0ce1195c46f7c98e6025abbaf007"
+			},
+			{
+			  "blobref": "sha1-7ca7743e38854598680d94ef85348f2c48a44513",
+			  "modtime": "2011-11-28T01:32:37.000123456Z",
+			  "owner": "sha1-ad87ca5c78bd0ce1195c46f7c98e6025abbaf007"
+			}
 		  ],
 		  "meta": {
-		    "sha1-3c8b5d36bd4182c6fe802984832f197786662ccf": {
-		      "blobRef": "sha1-3c8b5d36bd4182c6fe802984832f197786662ccf",
-		      "camliType": "permanode",
-		      "size": 534,
-		      "permanode": {
-		        "attr": {
-		          "camliMember": [
-		            "sha1-7ca7743e38854598680d94ef85348f2c48a44513"
-		          ]
-		        },
+			"sha1-3c8b5d36bd4182c6fe802984832f197786662ccf": {
+			  "blobRef": "sha1-3c8b5d36bd4182c6fe802984832f197786662ccf",
+			  "camliType": "permanode",
+			  "size": 534,
+			  "permanode": {
+				"attr": {
+				  "camliMember": [
+					"sha1-7ca7743e38854598680d94ef85348f2c48a44513"
+				  ]
+				},
 				"modtime": "` + addToClockOrigin(2*time.Second) + `"
-		      }
-		    },
-		    "sha1-7ca7743e38854598680d94ef85348f2c48a44513": {
-		      "blobRef": "sha1-7ca7743e38854598680d94ef85348f2c48a44513",
-		      "camliType": "permanode",
-		      "size": 534,
-		      "permanode": {
-		        "attr": {
-		          "camliContent": [
-		            "sha1-e3f0ee86622dda4d7e8a4a4af51117fb79dbdbbb"
-		          ]
-		        },
+			  }
+			},
+			"sha1-7ca7743e38854598680d94ef85348f2c48a44513": {
+			  "blobRef": "sha1-7ca7743e38854598680d94ef85348f2c48a44513",
+			  "camliType": "permanode",
+			  "size": 534,
+			  "permanode": {
+				"attr": {
+				  "camliContent": [
+					"sha1-e3f0ee86622dda4d7e8a4a4af51117fb79dbdbbb"
+				  ]
+				},
 				"modtime": "` + addToClockOrigin(1*time.Second) + `"
-		      }
-		    },
-		    "sha1-e3f0ee86622dda4d7e8a4a4af51117fb79dbdbbb": {
-		      "blobRef": "sha1-e3f0ee86622dda4d7e8a4a4af51117fb79dbdbbb",
-		      "camliType": "file",
-		      "size": 184,
-		      "file": {
-		        "fileName": "dude.jpg",
-		        "size": 1932,
-		        "mimeType": "image/jpeg"
-		      },
-		      "image": {
-		        "width": 50,
-		        "height": 100
-		      }
-		    }
+			  }
+			},
+			"sha1-e3f0ee86622dda4d7e8a4a4af51117fb79dbdbbb": {
+			  "blobRef": "sha1-e3f0ee86622dda4d7e8a4a4af51117fb79dbdbbb",
+			  "camliType": "file",
+			  "size": 184,
+			  "file": {
+				"fileName": "dude.jpg",
+				"size": 1932,
+				"mimeType": "image/jpeg"
+			  },
+			  "image": {
+				"width": 50,
+				"height": 100
+			  }
+			}
 		  }
 		}`),
 	},
@@ -468,26 +571,26 @@ var handlerTests = []handlerTest{
 		},
 		query: "recent?thumbnails=100",
 		want: parseJSON(`{
-                "recent": [
-                    {"blobref": "sha1-7ca7743e38854598680d94ef85348f2c48a44513",
-                     "modtime": "2011-11-28T01:32:37.000123456Z",
-                     "owner": "sha1-ad87ca5c78bd0ce1195c46f7c98e6025abbaf007"}
-                ],
-                "meta": {
-                   "sha1-7ca7743e38854598680d94ef85348f2c48a44513": {
+				"recent": [
+					{"blobref": "sha1-7ca7743e38854598680d94ef85348f2c48a44513",
+					 "modtime": "2011-11-28T01:32:37.000123456Z",
+					 "owner": "sha1-ad87ca5c78bd0ce1195c46f7c98e6025abbaf007"}
+				],
+				"meta": {
+				   "sha1-7ca7743e38854598680d94ef85348f2c48a44513": {
 		 "blobRef": "sha1-7ca7743e38854598680d94ef85348f2c48a44513",
 		 "camliType": "permanode",
-                 "permanode": {
-                   "attr": { "title": [ "Some title" ] },
+				 "permanode": {
+				   "attr": { "title": [ "Some title" ] },
 					"modtime": "` + addToClockOrigin(1*time.Second) + `"
-                 },
-                 "size": 534,
-                 "thumbnailHeight": 100,
-                 "thumbnailSrc": "node.png",
-                 "thumbnailWidth": 100
-                    }
-                }
-               }`),
+				 },
+				 "size": 534,
+				 "thumbnailHeight": 100,
+				 "thumbnailSrc": "node.png",
+				 "thumbnailWidth": 100
+					}
+				}
+			   }`),
 	},
 
 	// edgeto handler: put a permanode (member) in two parent
@@ -520,57 +623,112 @@ var handlerTests = []handlerTest{
 	},
 }
 
+func marshalJSON(v interface{}) string {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+func jmap(v interface{}) map[string]interface{} {
+	m := make(map[string]interface{})
+	if err := json.NewDecoder(strings.NewReader(marshalJSON(v))).Decode(&m); err != nil {
+		panic(err)
+	}
+	return m
+}
+
+func checkNoDups(sliceName string, tests []handlerTest) {
+	seen := map[string]bool{}
+	for _, tt := range tests {
+		if seen[tt.name] {
+			panic(fmt.Sprintf("duplicate handlerTest named %q in var %s", tt.name, sliceName))
+		}
+		seen[tt.name] = true
+	}
+}
+
+func init() {
+	checkNoDups("handlerTests", handlerTests)
+}
+
+func (ht handlerTest) test(t *testing.T) {
+	SetTestHookBug121(func() {})
+
+	fakeIndex := test.NewFakeIndex()
+	idx := ht.setup(fakeIndex)
+
+	indexOwner := owner
+	if io, ok := idx.(indexOwnerer); ok {
+		indexOwner = io.IndexOwner()
+	}
+	h := NewHandler(idx, indexOwner)
+
+	var body io.Reader
+	var method = "GET"
+	if ht.postBody != "" {
+		method = "POST"
+		body = strings.NewReader(ht.postBody)
+	}
+	req, err := http.NewRequest(method, "/camli/search/"+ht.query, body)
+	if err != nil {
+		t.Fatalf("%s: bad query: %v", ht.name, err)
+	}
+	req.Header.Set(httputil.PathSuffixHeader, req.URL.Path[1:])
+
+	rr := httptest.NewRecorder()
+	rr.Body = new(bytes.Buffer)
+
+	h.ServeHTTP(rr, req)
+	got := rr.Body.Bytes()
+
+	if len(ht.wantDescribed) > 0 {
+		dr := new(DescribeResponse)
+		if err := json.NewDecoder(bytes.NewReader(got)).Decode(dr); err != nil {
+			t.Fatalf("On test %s: Non-JSON response: %s", ht.name, got)
+		}
+		var gotDesc []string
+		for k := range dr.Meta {
+			gotDesc = append(gotDesc, k)
+		}
+		sort.Strings(ht.wantDescribed)
+		sort.Strings(gotDesc)
+		if !reflect.DeepEqual(gotDesc, ht.wantDescribed) {
+			t.Errorf("On test %s: described blobs:\n%v\nwant:\n%v\n",
+				ht.name, gotDesc, ht.wantDescribed)
+		}
+		if ht.want == nil {
+			return
+		}
+	}
+
+	want, _ := json.MarshalIndent(ht.want, "", "  ")
+	trim := bytes.TrimSpace
+
+	if bytes.Equal(trim(got), trim(want)) {
+		return
+	}
+
+	// Try with re-encoded got, since the JSON ordering doesn't matter
+	// to the test,
+	gotj := parseJSON(string(got))
+	got2, _ := json.MarshalIndent(gotj, "", "  ")
+	if bytes.Equal(got2, want) {
+		return
+	}
+	diff := test.Diff(want, got2)
+
+	t.Errorf("test %s:\nwant: %s\n got: %s\ndiff:\n%s", ht.name, want, got, diff)
+}
+
 func TestHandler(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping in short mode")
 		return
 	}
-	seen := map[string]bool{}
 	defer SetTestHookBug121(func() {})
-	for _, tt := range handlerTests {
-		if seen[tt.name] {
-			t.Fatalf("duplicate test named %q", tt.name)
-		}
-		seen[tt.name] = true
-		SetTestHookBug121(func() {})
-
-		fakeIndex := test.NewFakeIndex()
-		idx := tt.setup(fakeIndex)
-
-		indexOwner := owner
-		if io, ok := idx.(indexOwnerer); ok {
-			indexOwner = io.IndexOwner()
-		}
-		h := NewHandler(idx, indexOwner)
-
-		req, err := http.NewRequest("GET", "/camli/search/"+tt.query, nil)
-		if err != nil {
-			t.Fatalf("%s: bad query: %v", tt.name, err)
-		}
-		req.Header.Set(httputil.PathSuffixHeader, req.URL.Path[1:])
-
-		rr := httptest.NewRecorder()
-		rr.Body = new(bytes.Buffer)
-
-		h.ServeHTTP(rr, req)
-
-		got := rr.Body.Bytes()
-		want, _ := json.MarshalIndent(tt.want, "", "  ")
-		trim := bytes.TrimSpace
-
-		if bytes.Equal(trim(got), trim(want)) {
-			continue
-		}
-
-		// Try with re-encoded got, since the JSON ordering doesn't matter
-		// to the test,
-		gotj := parseJSON(string(got))
-		got2, _ := json.MarshalIndent(gotj, "", "  ")
-		if bytes.Equal(got2, want) {
-			continue
-		}
-		diff := test.Diff(want, got2)
-
-		t.Errorf("test %s:\nwant: %s\n got: %s\ndiff:\n%s", tt.name, want, got, diff)
+	for _, ht := range handlerTests {
+		ht.test(t)
 	}
 }

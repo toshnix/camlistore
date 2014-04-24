@@ -89,7 +89,7 @@ func main() {
 			log.Fatal(err)
 		}
 
-		embedName := "zembed_" + fileName + ".go"
+		embedName := "zembed_" + strings.Replace(fileName, string(filepath.Separator), "_", -1) + ".go"
 		zfi, zerr := os.Stat(embedName)
 		genFile := func() bool {
 			if *processAll || zerr != nil {
@@ -106,7 +106,7 @@ func main() {
 		if !genFile() {
 			continue
 		}
-		log.Printf("Updating %s (package %s)", filepath.Join(dir, embedName), pkgName)
+		log.Printf("Updating %s (package %s)", embedName, pkgName)
 
 		bs, err := ioutil.ReadFile(fileName)
 		if err != nil {
@@ -228,24 +228,24 @@ func quote(bs []byte) []byte {
 	return qb.Bytes()
 }
 
+// matchingFiles finds all files matching a regex that should be embedded. This
+// skips files prefixed with "zembed_", since those are an implementation
+// detail of the embedding process itself.
 func matchingFiles(p *regexp.Regexp) []string {
 	var f []string
-	d, err := os.Open(".")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer d.Close()
-	names, err := d.Readdirnames(-1)
-	if err != nil {
-		log.Fatal(err)
-	}
-	for _, n := range names {
-		if strings.HasPrefix(n, "zembed_") {
-			continue
+	err := filepath.Walk(".", func(path string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
 		}
-		if p.MatchString(n) {
-			f = append(f, n)
+		n := filepath.Base(path)
+		if !fi.IsDir() && !strings.HasPrefix(n, "zembed_") && p.MatchString(n) {
+			f = append(f, path)
 		}
+		return nil
+	})
+	if err != nil {
+		log.Fatalf("Error walking directory tree: %s", err)
+		return nil
 	}
 	return f
 }

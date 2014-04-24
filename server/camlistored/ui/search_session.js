@@ -62,11 +62,11 @@ cam.SearchSession.DESCRIBE_REQUEST = {
 	// TODO(aa): This needs to die: https://code.google.com/p/camlistore/issues/detail?id=321
 	thumbnailSize: 1000,
 
-	// TODO(aa): This is not great. The describe request will still return tons of data we don't care about:
+	// TODO(aa): This is not great. The describe request will return tons of data we don't care about:
 	// - Children of folders
 	// - Properties we don't use
 	// See: https://code.google.com/p/camlistore/issues/detail?id=319
-	depth: 2
+	depth: 4
 };
 
 cam.SearchSession.instanceCount_ = 0;
@@ -118,6 +118,33 @@ cam.SearchSession.prototype.close = function() {
 	if (this.socket_) {
 		this.socket_.close();
 	}
+};
+
+cam.SearchSession.prototype.getMeta = function(blobref) {
+	return this.data_.description.meta[blobref];
+};
+
+cam.SearchSession.prototype.getResolvedMeta = function(blobref) {
+	var meta = this.data_.description.meta[blobref];
+	if (meta && meta.camliType == 'permanode') {
+		var camliContent = cam.permanodeUtils.getSingleAttr(meta.permanode, 'camliContent');
+		if (camliContent) {
+			return this.data_.description.meta[camliContent];
+		}
+	}
+	return meta;
+};
+
+cam.SearchSession.prototype.getTitle = function(blobref) {
+	var meta = this.getMeta(blobref);
+	if (meta.camliType == 'permanode') {
+		var title = cam.permanodeUtils.getSingleAttr(meta.permanode, 'title');
+		if (title) {
+			return title;
+		}
+	}
+	var rm = this.getResolvedMeta(blobref);
+	return (rm && rm.camliType == 'file' && rm.file.fileName) || (rm && rm.camliType == 'directory' && rm.dir.fileName) || '';
 };
 
 cam.SearchSession.prototype.resetData_ = function() {

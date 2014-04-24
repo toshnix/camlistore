@@ -19,25 +19,26 @@ package mongo
 import (
 	"testing"
 
+	"camlistore.org/pkg/jsonconfig"
+	"camlistore.org/pkg/sorted"
 	"camlistore.org/pkg/sorted/kvtest"
 	"camlistore.org/pkg/test/dockertest"
 )
 
-const mongoImage = "robinvdvleuten/mongo"
-
 // TestMongoKV tests against a real MongoDB instance, using a Docker container.
-// Currently using https://index.docker.io/u/robinvdvleuten/mongo/
 func TestMongoKV(t *testing.T) {
 	// SetupMongoContainer may skip or fatal the test if docker isn't found or something goes wrong when setting up the container.
 	// Thus, no error is returned
 	containerID, ip := dockertest.SetupMongoContainer(t)
-	defer dockertest.KillContainer(containerID)
-	kv, err := NewKeyValue(Config{
-		Server:   ip,
-		Database: "camlitest",
+	defer containerID.KillRemove(t)
+
+	kv, err := sorted.NewKeyValue(jsonconfig.Obj{
+		"type":     "mongo",
+		"host":     ip,
+		"database": "camlitest",
 	})
 	if err != nil {
-		t.Fatalf("monogo.NewKeyValue = %v", err)
+		t.Fatalf("mongo.NewKeyValue = %v", err)
 	}
 	kvtest.TestSorted(t, kv)
 }

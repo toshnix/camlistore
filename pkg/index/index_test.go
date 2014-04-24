@@ -28,6 +28,7 @@ import (
 	"testing"
 
 	"camlistore.org/pkg/blob"
+	"camlistore.org/pkg/blobserver"
 	"camlistore.org/pkg/index"
 	"camlistore.org/pkg/index/indextest"
 	"camlistore.org/pkg/sorted"
@@ -69,9 +70,15 @@ func TestDelete_Memory(t *testing.T) {
 }
 
 var (
-	// those dirs are not packages implementing indexers,
+	// those test files are not specific to an indexer implementation
 	// hence we do not want to check them.
-	excludedDirs = []string{"indextest", "testdata", "sqlindex"}
+	notAnIndexer = []string{
+		"corpus_bench_test.go",
+		"corpus_test.go",
+		"export_test.go",
+		"index_test.go",
+		"keys_test.go",
+	}
 	// A map is used in hasAllRequiredTests to note which required
 	// tests have been found in a package, by setting the corresponding
 	// booleans to true. Those are the keys for this map.
@@ -81,54 +88,43 @@ var (
 // This function checks that all the functions using the tests
 // defined in indextest, namely:
 // TestIndex_, TestPathOfSignerTarget_, TestFiles_
-// do exist in the provided package.
-func hasAllRequiredTests(path string, t *testing.T) error {
+// do exist in the provided test file.
+func hasAllRequiredTests(name string, t *testing.T) error {
 	tests := make(map[string]bool)
 	for _, v := range requiredTests {
 		tests[v] = false
 	}
-	dir, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	names, err := dir.Readdirnames(-1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer dir.Close()
 
-	for _, name := range names {
-		if strings.HasPrefix(name, ".") || !strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		fset := token.NewFileSet()
-		f, err := parser.ParseFile(fset, filepath.Join(path, name), nil, 0)
-		if err != nil {
-			t.Fatalf("%v: %v", filepath.Join(path, name), err)
-		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			switch x := n.(type) {
-			case *ast.FuncDecl:
-				name := x.Name.Name
-				for k, _ := range tests {
-					if strings.HasPrefix(name, k) {
-						tests[k] = true
-					}
+	if !strings.HasSuffix(name, "_test.go") || skipFromList(name) {
+		return nil
+	}
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, name, nil, 0)
+	if err != nil {
+		t.Fatalf("%v: %v", name, err)
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.FuncDecl:
+			name := x.Name.Name
+			for k, _ := range tests {
+				if strings.HasPrefix(name, k) {
+					tests[k] = true
 				}
 			}
-			return true
-		})
-	}
+		}
+		return true
+	})
 
 	for k, v := range tests {
 		if !v {
-			return fmt.Errorf("%v not implemented in %v", k, path)
+			return fmt.Errorf("%v not implemented in %v", k, name)
 		}
 	}
 	return nil
 }
 
-// For each package implementing an indexer, this checks that
+// For each test file dedicated to an indexer implementation, this checks that
 // all the required tests are present in its test suite.
 func TestIndexerTestsCompleteness(t *testing.T) {
 	cwd, err := os.Open(".")
@@ -143,21 +139,22 @@ func TestIndexerTestsCompleteness(t *testing.T) {
 
 	for _, file := range files {
 		name := file.Name()
-		if !file.IsDir() || skipDir(name) {
+		if file.IsDir() || strings.HasPrefix(name, ".") {
 			continue
 		}
 		if err := hasAllRequiredTests(name, t); err != nil {
 			t.Error(err)
 		}
 	}
+	// special case for sqlite as it is the only one left in its own package
+	if err := hasAllRequiredTests(filepath.FromSlash("sqlite/sqlite_test.go"), t); err != nil {
+		t.Error(err)
+	}
 }
 
-func skipDir(name string) bool {
-	if strings.HasPrefix(name, "_") {
-		return true
-	}
-	for _, v := range excludedDirs {
-		if v == name {
+func skipFromList(name string) bool {
+	for _, v := range notAnIndexer {
+		if name == v {
 			return true
 		}
 	}
@@ -357,4 +354,68 @@ func TestOutOfOrderIndexing(t *testing.T) {
 			t.Errorf("Shouldn't have missing key: %q", k)
 		}
 	})
+}
+
+func TestIndexingClaimMissingPubkey(t *testing.T) {
+	s := sorted.NewMemoryKeyValue()
+	idx, err := index.New(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id := indextest.NewIndexDeps(idx)
+	id.Fataler = t
+
+	goodKeyFetcher := id.Index.KeyFetcher
+	emptyFetcher := new(test.Fetcher)
+
+	pn := id.NewPermanode()
+
+	// Prevent the index from being able to find the public key:
+	idx.KeyFetcher = emptyFetcher
+
+	// This previous failed to upload, since the signer's public key was
+	// unavailable.
+	claimRef := id.SetAttribute(pn, "tag", "foo")
+
+	t.Logf(" Claim is %v", claimRef)
+	t.Logf("Signer is %v", id.SignerBlobRef)
+
+	// Verify that populateClaim noted the missing public key blob:
+	{
+		key := fmt.Sprintf("missing|%s|%s", claimRef, id.SignerBlobRef)
+		if got, err := s.Get(key); got == "" || err != nil {
+			t.Errorf("key %q missing (err: %v); want 1", key, err)
+		}
+	}
+
+	// Now make it available again:
+	idx.KeyFetcher = idx.BlobSource
+
+	if err := copyBlob(id.SignerBlobRef, idx.BlobSource.(*test.Fetcher), goodKeyFetcher); err != nil {
+		t.Errorf("Error copying public key to BlobSource: %v", err)
+	}
+	if err := copyBlob(id.SignerBlobRef, idx, goodKeyFetcher); err != nil {
+		t.Errorf("Error uploading public key to indexer: %v", err)
+	}
+
+	idx.Exp_AwaitReindexing(t)
+
+	// Verify that populateClaim noted the missing public key blob:
+	{
+		key := fmt.Sprintf("missing|%s|%s", claimRef, id.SignerBlobRef)
+		if got, err := s.Get(key); got != "" || err == nil {
+			t.Errorf("row %q still exists", key)
+		}
+	}
+}
+
+func copyBlob(br blob.Ref, dst blobserver.BlobReceiver, src blob.Fetcher) error {
+	rc, _, err := src.Fetch(br)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	_, err = dst.ReceiveBlob(br, rc)
+	return err
 }

@@ -219,7 +219,7 @@ func TestAttribute(t *testing.T) {
 }`,
 		},
 		{
-			bb: NewClaim(&claimParam{
+			bb: newClaim(&claimParam{
 				permanode: br,
 				claimType: SetAttributeClaim,
 				attribute: "foo",

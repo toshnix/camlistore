@@ -32,12 +32,17 @@ import (
 	"camlistore.org/pkg/blob"
 	"camlistore.org/pkg/blobserver"
 	"camlistore.org/pkg/context"
+	"camlistore.org/pkg/jsonconfig"
 	"camlistore.org/pkg/schema"
 	"camlistore.org/pkg/sorted"
 	"camlistore.org/pkg/strutil"
 	"camlistore.org/pkg/types"
 	"camlistore.org/pkg/types/camtypes"
 )
+
+func init() {
+	blobserver.RegisterStorageConstructor("index", newFromConfig)
+}
 
 type Index struct {
 	*blobserver.NoImplStorage
@@ -141,6 +146,35 @@ func New(s sorted.KeyValue) (*Index, error) {
 	return idx, nil
 }
 
+func newFromConfig(ld blobserver.Loader, config jsonconfig.Obj) (blobserver.Storage, error) {
+	blobPrefix := config.RequiredString("blobSource")
+	kvConfig := config.RequiredObject("storage")
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+	kv, err := sorted.NewKeyValue(kvConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	ix, err := New(kv)
+	if err != nil {
+		return nil, err
+	}
+
+	sto, err := ld.GetStorage(blobPrefix)
+	if err != nil {
+		ix.Close()
+		return nil, err
+	}
+	ix.BlobSource = sto
+
+	// Good enough, for now:
+	ix.KeyFetcher = ix.BlobSource
+
+	return ix, err
+}
+
 func (x *Index) String() string {
 	return fmt.Sprintf("Camlistore index, using key/value implementation %T", x.s)
 }
@@ -209,7 +243,7 @@ func (x *Index) Reindex() error {
 		go func() {
 			defer wg.Done()
 			for br := range blobc {
-				if err := x.reindex(br); err != nil {
+				if err := x.indexBlob(br); err != nil {
 					log.Printf("Error reindexing %v: %v", br, err)
 					nerrmu.Lock()
 					nerr++
@@ -223,7 +257,15 @@ func (x *Index) Reindex() error {
 	if err := <-enumErr; err != nil {
 		return err
 	}
+
 	wg.Wait()
+
+	x.mu.Lock()
+	readyCount := len(x.readyReindex)
+	x.mu.Unlock()
+	if readyCount > 0 {
+		return fmt.Errorf("%d blobs were ready to reindex in out-of-order queue, but not yet ran", readyCount)
+	}
 
 	log.Printf("Index rebuild complete.")
 	nerrmu.Lock() // no need to unlock
@@ -1022,6 +1064,18 @@ func (x *Index) GetImageInfo(fileRef blob.Ref) (camtypes.ImageInfo, error) {
 		return camtypes.ImageInfo{}, fmt.Errorf("index: bogus key %q = %q", key, v)
 	}
 	return ii, nil
+}
+
+func (x *Index) GetMediaTags(fileRef blob.Ref) (tags map[string]string, err error) {
+	if x.corpus != nil {
+		return x.corpus.GetMediaTags(fileRef)
+	}
+	it := x.queryPrefix(keyMediaTag, fileRef.String())
+	defer closeIterator(it, &err)
+	for it.Next() {
+		tags[it.Key()] = it.Value()
+	}
+	return tags, nil
 }
 
 func (x *Index) EdgesTo(ref blob.Ref, opts *camtypes.EdgesToOpts) (edges []*camtypes.Edge, err error) {

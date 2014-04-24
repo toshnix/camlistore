@@ -37,7 +37,6 @@ import (
 	"expvar"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -474,8 +473,19 @@ func isDeletedRef(digest string) bool {
 	return strings.HasPrefix(digest, "x")
 }
 
+// Type readSeekNopCloser is an io.ReadSeeker with a no-op Close method.
+type readSeekNopCloser struct {
+	io.ReadSeeker
+}
+
+func (readSeekNopCloser) Close() error { return nil }
+
+func newReadSeekNopCloser(rs io.ReadSeeker) types.ReadSeekCloser {
+	return readSeekNopCloser{rs}
+}
+
 // Implements the blobserver.StreamBlobs interface
-func (s *storage) StreamBlobs(ctx *context.Context, dest chan<- blob.Blob, contToken string, limitBytes int64) (nextContinueToken string, err error) {
+func (s *storage) StreamBlobs(ctx *context.Context, dest chan<- *blob.Blob, contToken string, limitBytes int64) (nextContinueToken string, err error) {
 	defer close(dest)
 
 	i, offset, err := parseContToken(contToken)
@@ -563,8 +573,8 @@ func (s *storage) StreamBlobs(ctx *context.Context, dest chan<- blob.Blob, contT
 			return
 		}
 		offsetToAdd += int64(size)
-		newReader := func() io.ReadCloser {
-			return ioutil.NopCloser(bytes.NewBuffer(data))
+		newReader := func() types.ReadSeekCloser {
+			return newReadSeekNopCloser(bytes.NewReader(data))
 		}
 		ref, ok := blob.Parse(digest)
 		if !ok {
@@ -578,6 +588,7 @@ func (s *storage) StreamBlobs(ctx *context.Context, dest chan<- blob.Blob, contT
 		case dest <- blob:
 			sent += int64(size)
 		case <-ctx.Done():
+			err = context.ErrCanceled
 			return
 		}
 	}

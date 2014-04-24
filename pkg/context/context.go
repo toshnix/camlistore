@@ -20,6 +20,7 @@ package context
 
 import (
 	"errors"
+	"net/http"
 	"sync"
 )
 
@@ -37,6 +38,8 @@ func TODO() *Context {
 type Context struct {
 	cancelOnce sync.Once
 	done       chan struct{}
+
+	httpClient *http.Client // nil means default
 }
 
 // New returns a new Context.
@@ -44,6 +47,22 @@ func New() *Context {
 	return &Context{
 		done: make(chan struct{}),
 	}
+}
+
+// HTTPClient returns the HTTP Client to use for this context.
+func (c *Context) HTTPClient() *http.Client {
+	if c != nil {
+		if cl := c.httpClient; cl != nil {
+			return cl
+		}
+	}
+	return http.DefaultClient
+}
+
+// SetHTTPClient sets the HTTP client as returned by HTTPClient.
+// SetHTTPClient must not be called concurrently with HTTPClient.
+func (c *Context) SetHTTPClient(cl *http.Client) {
+	c.httpClient = cl
 }
 
 // New returns a child context attached to the receiver parent context c.

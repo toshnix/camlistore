@@ -1342,6 +1342,9 @@ func (c *FileConstraint) blobMatches(s *search, br blob.Ref, bm camtypes.BlobMet
 		}
 		imageInfo, err := corpus.GetImageInfoLocked(br)
 		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
 			return false, err
 		}
 		width = int64(imageInfo.Width)
@@ -1371,9 +1374,8 @@ func (c *FileConstraint) blobMatches(s *search, br blob.Ref, bm camtypes.BlobMet
 		if corpus == nil {
 			return false, nil
 		}
-		mediaTags := corpus.MediaTagLocked(br)
 		var tagValue string
-		if mediaTags != nil && mt.Tag != "" {
+		if mediaTags, err := corpus.GetMediaTagsLocked(br); err == nil && mt.Tag != "" {
 			tagValue = mediaTags[mt.Tag]
 		}
 		if mt.Int != nil {

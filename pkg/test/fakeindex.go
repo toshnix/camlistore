@@ -26,7 +26,6 @@ import (
 
 	"camlistore.org/pkg/blob"
 	"camlistore.org/pkg/context"
-	"camlistore.org/pkg/types"
 	"camlistore.org/pkg/types/camtypes"
 )
 
@@ -80,12 +79,12 @@ func camliTypeFromMime(mime string) string {
 	return ""
 }
 
-func (fi *FakeIndex) AddMeta(br blob.Ref, camliType string, size int64) {
+func (fi *FakeIndex) AddMeta(br blob.Ref, camliType string, size uint32) {
 	fi.lk.Lock()
 	defer fi.lk.Unlock()
 	fi.meta[br] = camtypes.BlobMeta{
 		Ref:       br,
-		Size:      types.U32(size),
+		Size:      size,
 		CamliType: camliType,
 	}
 }
@@ -176,6 +175,10 @@ func (fi *FakeIndex) GetFileInfo(fileRef blob.Ref) (camtypes.FileInfo, error) {
 }
 
 func (fi *FakeIndex) GetImageInfo(fileRef blob.Ref) (camtypes.ImageInfo, error) {
+	panic("NOIMPL")
+}
+
+func (fi *FakeIndex) GetMediaTags(fileRef blob.Ref) (tags map[string]string, err error) {
 	panic("NOIMPL")
 }
 

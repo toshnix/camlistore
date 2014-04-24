@@ -171,9 +171,20 @@ func (r Ref) IsSupported() bool {
 	return ok
 }
 
+// ParseKnown is like Parse, but only parse blobrefs known to this
+// server. It returns ok == false for well-formed but unsupported
+// blobrefs.
+func ParseKnown(s string) (ref Ref, ok bool) {
+	return parse(s, false)
+}
+
 // Parse parse s as a blobref and returns the ref and whether it was
 // parsed successfully.
 func Parse(s string) (ref Ref, ok bool) {
+	return parse(s, true)
+}
+
+func parse(s string, allowAll bool) (ref Ref, ok bool) {
 	i := strings.Index(s, "-")
 	if i < 0 {
 		return
@@ -182,7 +193,10 @@ func Parse(s string) (ref Ref, ok bool) {
 	hex := s[i+1:]
 	meta, ok := metaFromString[name]
 	if !ok {
-		return parseUnknown(name, hex)
+		if allowAll || testRefType[name] {
+			return parseUnknown(name, hex)
+		}
+		return
 	}
 	if len(hex) != meta.size*2 {
 		ok = false
@@ -193,6 +207,12 @@ func Parse(s string) (ref Ref, ok bool) {
 		return
 	}
 	return Ref{dt}, true
+}
+
+var testRefType = map[string]bool{
+	"fakeref": true,
+	"testref": true,
+	"perma":   true,
 }
 
 // ParseBytes is like Parse, but parses from a byte slice.
@@ -564,3 +584,13 @@ type SizedByRef []SizedRef
 func (s SizedByRef) Len() int           { return len(s) }
 func (s SizedByRef) Less(i, j int) bool { return s[i].Less(s[j].Ref) }
 func (s SizedByRef) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
+
+// TypeAlphabet returns the valid characters in the given blobref type.
+// It returns the empty string if the typ is unknown.
+func TypeAlphabet(typ string) string {
+	switch typ {
+	case "sha1":
+		return hexDigit
+	}
+	return ""
+}

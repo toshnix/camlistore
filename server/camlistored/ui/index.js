@@ -25,6 +25,11 @@ goog.require('goog.string');
 goog.require('goog.Uri');
 
 goog.require('cam.BlobItemContainerReact');
+goog.require('cam.BlobItemFoursquareContent');
+goog.require('cam.BlobItemGenericContent');
+goog.require('cam.BlobItemVideoContent');
+goog.require('cam.BlobItemImageContent');
+goog.require('cam.BlobItemDemoContent');
 goog.require('cam.DetailView');
 goog.require('cam.Navigator');
 goog.require('cam.NavReact');
@@ -70,7 +75,7 @@ cam.IndexPage = React.createClass({
 		var newURL = new goog.Uri(this.props.location.href);
 		this.baseURL_ = newURL.resolve(new goog.Uri(CAMLISTORE_CONFIG.uiRoot));
 
-		this.navigator_ = new cam.Navigator(this.props.eventTarget, this.props.location, this.props.history, true);
+		this.navigator_ = new cam.Navigator(this.props.eventTarget, this.props.location, this.props.history);
 		this.navigator_.onNavigate = this.handleNavigate_;
 
 		this.handleNavigate_(newURL);
@@ -318,8 +323,10 @@ cam.IndexPage = React.createClass({
 		}
 	},
 
-	handleDetailURL_: function(item) {
-		return this.getDetailURL_(Boolean(item.im), item.blobref);
+	handleDetailURL_: function(blobref) {
+		var m = this.searchSession_.getMeta(blobref);
+		var rm = this.searchSession_.getResolvedMeta(blobref);
+		return this.getDetailURL_(Boolean(rm && rm.image), m.blobRef);
 	},
 
 	getDetailURL_: function(newUI, blobref) {
@@ -327,6 +334,8 @@ cam.IndexPage = React.createClass({
 		detailURL.setParameterValue('p', blobref);
 		if (newUI) {
 			detailURL.setParameterValue('newui', '1');
+		} else {
+			detailURL.removeParameter('newui');
 		}
 		return detailURL;
 	},
@@ -343,8 +352,7 @@ cam.IndexPage = React.createClass({
 		}
 
 		var blobref = goog.object.getAnyKey(this.state.selection);
-		var data = new cam.BlobItemReactData(blobref, this.searchSession_.getCurrentResults().description.meta);
-		if (data.m.camliType != 'permanode') {
+		if (this.searchSession_.getMeta(blobref).camliType != 'permanode') {
 			return null;
 		}
 
@@ -415,6 +423,13 @@ cam.IndexPage = React.createClass({
 			key: 'blobitemcontainer',
 			ref: 'blobItemContainer',
 			detailURL: this.handleDetailURL_,
+			handlers: [
+				cam.BlobItemDemoContent.getHandler,
+				cam.BlobItemFoursquareContent.getHandler,
+				cam.BlobItemImageContent.getHandler,
+				cam.BlobItemVideoContent.getHandler,
+				cam.BlobItemGenericContent.getHandler // must be last
+			],
 			history: this.props.history,
 			onSelectionChange: this.handleSelectionChange_,
 			searchSession: this.searchSession_,
@@ -471,7 +486,7 @@ cam.IndexPage = React.createClass({
 			searchSession: this.searchSession_,
 			searchURL: searchURL,
 			oldURL: oldURL,
-			getDetailURL: this.getDetailURL_.bind(this, false),
+			getDetailURL: this.handleDetailURL_,
 			navigator: this.navigator_,
 			keyEventTarget: this.props.eventTarget,
 			width: this.props.availWidth,

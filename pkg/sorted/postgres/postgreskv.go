@@ -32,50 +32,39 @@ import (
 )
 
 func init() {
-	sorted.RegisterKeyValue("postgresql", newKeyValueFromJSONConfig)
-}
-
-// Config holds the parameters used to connect to the PostgreSQL db.
-type Config struct {
-	Host     string // Optional. Defaults to "localhost" in ConfigFromJSON.
-	Database string // Required.
-	User     string // Required.
-	Password string // Optional.
-	SSLMode  string // Optional. Defaults to "require" in ConfigFromJSON.
-}
-
-// ConfigFromJSON populates Config from config, and validates
-// config. It returns an error if config fails to validate.
-func ConfigFromJSON(config jsonconfig.Obj) (Config, error) {
-	conf := Config{
-		Host:     config.OptionalString("host", "localhost"),
-		User:     config.RequiredString("user"),
-		Password: config.OptionalString("password", ""),
-		Database: config.RequiredString("database"),
-		SSLMode:  config.OptionalString("sslmode", "require"),
-	}
-	if err := config.Validate(); err != nil {
-		return Config{}, err
-	}
-	return conf, nil
+	sorted.RegisterKeyValue("postgres", newKeyValueFromJSONConfig)
 }
 
 func newKeyValueFromJSONConfig(cfg jsonconfig.Obj) (sorted.KeyValue, error) {
-	conf, err := ConfigFromJSON(cfg)
-	if err != nil {
+	conninfo := fmt.Sprintf("user=%s dbname=%s host=%s password=%s sslmode=%s",
+		cfg.RequiredString("user"),
+		cfg.RequiredString("database"),
+		cfg.OptionalString("host", "localhost"),
+		cfg.OptionalString("password", ""),
+		cfg.OptionalString("sslmode", "require"),
+	)
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return NewKeyValue(conf)
-}
-
-// NewKeyValue returns a sorted.KeyValue implementation of the described PostgreSQL database.
-func NewKeyValue(cfg Config) (sorted.KeyValue, error) {
-	conninfo := fmt.Sprintf("user=%s dbname=%s host=%s password=%s sslmode=%s",
-		cfg.User, cfg.Database, cfg.Host, cfg.Password, cfg.SSLMode)
 	db, err := sql.Open("postgres", conninfo)
 	if err != nil {
 		return nil, err
 	}
+	for _, tableSql := range SQLCreateTables() {
+		if _, err := db.Exec(tableSql); err != nil {
+			return nil, fmt.Errorf("error creating table with %q: %v", tableSql, err)
+		}
+	}
+	for _, statement := range SQLDefineReplace() {
+		if _, err := db.Exec(statement); err != nil {
+			return nil, fmt.Errorf("error setting up replace statement with %q: %v", statement, err)
+		}
+	}
+	r, err := db.Query(fmt.Sprintf(`SELECT replaceintometa('version', '%d')`, SchemaVersion()))
+	if err != nil {
+		return nil, fmt.Errorf("error setting schema version: %v", err)
+	}
+	r.Close()
 
 	kv := &keyValue{
 		db: db,
@@ -85,7 +74,6 @@ func NewKeyValue(cfg Config) (sorted.KeyValue, error) {
 			BatchSetFunc:    altBatchSet,
 			PlaceHolderFunc: replacePlaceHolders,
 		},
-		conf: cfg,
 	}
 	if err := kv.ping(); err != nil {
 		return nil, fmt.Errorf("PostgreSQL db unreachable: %v", err)
@@ -109,8 +97,7 @@ func NewKeyValue(cfg Config) (sorted.KeyValue, error) {
 
 type keyValue struct {
 	*sqlkv.KeyValue
-	conf Config
-	db   *sql.DB
+	db *sql.DB
 }
 
 // postgres does not have REPLACE INTO (upsert), so we use that custom

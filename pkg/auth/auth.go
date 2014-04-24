@@ -102,7 +102,10 @@ func newLocalhostAuth(string) (AuthMode, error) {
 
 func newDevAuth(pw string) (AuthMode, error) {
 	// the vivify mode password is automatically set to "vivi" + Password
-	return &DevAuth{pw, "vivi" + pw}, nil
+	return &DevAuth{
+		Password:   pw,
+		VivifyPass: "vivi" + pw,
+	}, nil
 }
 
 func newUserPassAuth(arg string) (AuthMode, error) {
@@ -269,7 +272,7 @@ func IsLocalhost(req *http.Request) bool {
 // Allowed returns whether the given request
 // has access to perform all the operations in op.
 func Allowed(req *http.Request, op Operation) bool {
-	if op|OpUpload != 0 {
+	if op&OpUpload != 0 {
 		// upload (at least from camput) requires stat and get too
 		op = op | OpVivify
 	}

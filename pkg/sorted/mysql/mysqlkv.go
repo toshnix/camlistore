@@ -22,6 +22,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 
 	"camlistore.org/pkg/jsonconfig"
 	"camlistore.org/pkg/sorted"
@@ -34,53 +35,42 @@ func init() {
 	sorted.RegisterKeyValue("mysql", newKeyValueFromJSONConfig)
 }
 
-// Config holds the parameters used to connect to the MySQL db.
-type Config struct {
-	Host     string // Optional. Defaults to "localhost" in ConfigFromJSON.
-	Database string // Required.
-	User     string // Required.
-	Password string // Optional.
-}
-
-// ConfigFromJSON populates Config from config, and validates
-// config. It returns an error if config fails to validate.
-func ConfigFromJSON(config jsonconfig.Obj) (Config, error) {
-	conf := Config{
-		Host:     config.OptionalString("host", "localhost"),
-		User:     config.RequiredString("user"),
-		Password: config.OptionalString("password", ""),
-		Database: config.RequiredString("database"),
-	}
-	if err := config.Validate(); err != nil {
-		return Config{}, err
-	}
-	return conf, nil
-}
-
 func newKeyValueFromJSONConfig(cfg jsonconfig.Obj) (sorted.KeyValue, error) {
-	conf, err := ConfigFromJSON(cfg)
-	if err != nil {
+	host := cfg.OptionalString("host", "")
+	dsn := fmt.Sprintf("%s/%s/%s",
+		cfg.RequiredString("database"),
+		cfg.RequiredString("user"),
+		cfg.OptionalString("password", ""),
+	)
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return NewKeyValue(conf)
-}
+	if host != "" {
+		// TODO(mpl): document that somewhere
+		if !strings.Contains(host, ":") {
+			host = host + ":3306"
+		}
+		dsn = "tcp:" + host + "*" + dsn
+	}
 
-// NewKeyValue returns a sorted.KeyValue implementation of the described MySQL database.
-func NewKeyValue(cfg Config) (sorted.KeyValue, error) {
-	// TODO(bradfitz,mpl): host is ignored for now. I think we can connect to host with:
-	// tcp:ADDR*DBNAME/USER/PASSWD (http://godoc.org/github.com/ziutek/mymysql/godrv#Driver.Open)
-	// I suppose we'll have to do a lookup first.
-	dsn := cfg.Database + "/" + cfg.User + "/" + cfg.Password
 	db, err := sql.Open("mymysql", dsn)
 	if err != nil {
 		return nil, err
 	}
+	for _, tableSql := range SQLCreateTables() {
+		if _, err := db.Exec(tableSql); err != nil {
+			return nil, fmt.Errorf("error creating table with %q: %v", tableSql, err)
+		}
+	}
+	if _, err := db.Exec(fmt.Sprintf(`REPLACE INTO meta VALUES ('version', '%d')`, SchemaVersion())); err != nil {
+		return nil, fmt.Errorf("error setting schema version: %v", err)
+	}
+
 	kv := &keyValue{
 		db: db,
 		KeyValue: &sqlkv.KeyValue{
 			DB: db,
 		},
-		conf: cfg,
 	}
 	if err := kv.ping(); err != nil {
 		return nil, fmt.Errorf("MySQL db unreachable: %v", err)
@@ -108,8 +98,7 @@ func NewKeyValue(cfg Config) (sorted.KeyValue, error) {
 type keyValue struct {
 	*sqlkv.KeyValue
 
-	conf Config
-	db   *sql.DB
+	db *sql.DB
 }
 
 func (kv *keyValue) ping() error {

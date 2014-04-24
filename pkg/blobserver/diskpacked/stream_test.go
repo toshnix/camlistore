@@ -17,6 +17,7 @@ limitations under the License.
 package diskpacked
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
@@ -46,6 +47,24 @@ var pool00001 = []blobDetails{
 	{"sha1-4316a49fc962f627350ca0a01532421b8b93831d", "b782e7a6"},
 	{"sha1-74801cba6ffe31238f9995cc759b823aed8bd78c", "eedc50aebfa58de1"},
 	{"sha1-bd2a193deeb56aa2554a53eda95d69a95e7bf642", "104c00d6cf9f486f277e8f0493759a21"},
+}
+
+func uploadTestBlobs(t *testing.T, s blobserver.Storage, blobs []blobDetails) {
+	for _, b := range blobs {
+		ref, ok := blob.Parse(b.digest)
+		if !ok {
+			t.Fatalf("Invalid blob ref: %s", b.digest)
+		}
+		data, err := hex.DecodeString(b.data)
+		if err != nil {
+			t.Fatalf("hex.DecodeString(): %v", err)
+		}
+
+		_, err = blobserver.Receive(s, ref, bytes.NewBuffer(data))
+		if err != nil {
+			t.Fatalf("blobserver.Receive(): %v", err)
+		}
+	}
 }
 
 func basename(i int) string {
@@ -89,7 +108,7 @@ func newTestStorage(t *testing.T, packs ...pack) (s *storage, clean func()) {
 		writePack(t, dir, i, p)
 	}
 
-	s, err = newStorage(dir, 0)
+	s, err = newStorage(dir, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,9 +126,9 @@ func newTestStorage(t *testing.T, packs ...pack) (s *storage, clean func()) {
 // blobs, and returns them. It verifies the size and hash of each
 // before returning and fails the test if any of the checks fail. It
 // also fails the test if StreamBlobs returns a non-nil error.
-func getAllUpToLimit(t *testing.T, s *storage, tok string, limit int64) (blobs []blob.Blob, contToken string) {
+func getAllUpToLimit(t *testing.T, s *storage, tok string, limit int64) (blobs []*blob.Blob, contToken string) {
 	ctx := context.New()
-	ch := make(chan blob.Blob)
+	ch := make(chan *blob.Blob)
 	nextCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 
@@ -120,7 +139,7 @@ func getAllUpToLimit(t *testing.T, s *storage, tok string, limit int64) (blobs [
 		errCh <- err
 	}()
 
-	blobs = make([]blob.Blob, 0, 32)
+	blobs = make([]*blob.Blob, 0, 32)
 	for blob := range ch {
 		verifySizeAndHash(t, blob)
 		blobs = append(blobs, blob)
@@ -156,7 +175,7 @@ func TestBasicStreaming(t *testing.T) {
 
 }
 
-func verifySizeAndHash(t *testing.T, blob blob.Blob) {
+func verifySizeAndHash(t *testing.T, blob *blob.Blob) {
 	hash := sha1.New()
 	r := blob.Open()
 	n, err := io.Copy(hash, r)
@@ -231,29 +250,35 @@ func TestStreamMultiplePacks(t *testing.T) {
 }
 
 func TestSkipRemovedBlobs(t *testing.T) {
-	s, clean := newTestStorage(t, pack{pool00001})
-	defer clean()
+	// Note: This is the only streaming test that makes use of the
+	// index (for RemoveBlobs() to succeed). The others do create
+	// an indexed storage but they do not use the index to stream
+	// (nor should they use it). The streaming in this test is
+	// done by reading the underlying diskpacks.
+	s, cleanup := newTempDiskpacked(t)
+	defer cleanup()
+
+	uploadTestBlobs(t, s, pool00001)
 
 	ref, ok := blob.Parse(pool00001[0].digest)
 	if !ok {
-		t.Fatal("Invalid blob digest")
+		t.Fatalf("blob.Parse: %s", pool00001[0].digest)
 	}
 
 	err := s.RemoveBlobs([]blob.Ref{ref})
 	if err != nil {
-		if err == blobserver.ErrNotImplemented {
-			t.SkipNow()
-		}
-
-		t.Fatal(err)
+		t.Fatalf("blobserver.Storage.RemoveBlobs(): %v", err)
 	}
+
+	diskpackedSto := s.(*storage)
 
 	limit := int64(999999)
 	expected := len(pool00001) - 1 // We've deleted 1
-	blobs, _ := getAllUpToLimit(t, s, "", limit)
+	blobs, _ := getAllUpToLimit(t, diskpackedSto, "", limit)
 
 	if len(blobs) != expected {
 		t.Fatalf("Wrong blob count: Expected %d, got %d", expected,
 			len(blobs))
 	}
+
 }

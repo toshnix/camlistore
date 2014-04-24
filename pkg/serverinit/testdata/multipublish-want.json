@@ -18,7 +18,7 @@
 			"handlerArgs": {
 				"backends": [
 					"/bs/",
-					"/index-kv/"
+					"/index/"
 				]
 			}
 		},
@@ -45,70 +45,76 @@
 				"path": "/tmp/blobs/cache"
 			}
 		},
-		"/index-kv/": {
-			"handler": "storage-kvfileindexer",
+		"/importer/": {
+			"handler": "importer",
+			"handlerArgs": {}
+		},
+		"/index/": {
+			"handler": "storage-index",
 			"handlerArgs": {
 				"blobSource": "/bs/",
-				"file": "/path/to/indexkv.db"
+				"storage": {
+					"file": "/path/to/indexkv.db",
+					"type": "kv"
+				}
+			}
+		},
+		"/music/": {
+			"handler": "publish",
+			"handlerArgs": {
+				"blobRoot": "/bs-and-maybe-also-index/",
+				"cache": "/cache/",
+				"css": [
+					"pics.css"
+				],
+				"goTemplate": "gallery.html",
+				"js": [
+					"pics.js"
+				],
+				"rootName": "musicRoot",
+				"rootPermanode": [
+					"/sighelper/",
+					"sha1-999c6aae4ec8245dfe63edc4a2abb407824a4b5a"
+				],
+				"scaledImage": {
+					"file": "/tmp/camli-cache/music-thumbnails.kv",
+					"type": "kv"
+				},
+				"searchRoot": "/my-search/"
 			}
 		},
 		"/my-search/": {
 			"handler": "search",
 			"handlerArgs": {
-				"index": "/index-kv/",
+				"index": "/index/",
 				"owner": "sha1-f2b0b7da718b97ce8c31591d8ed4645c777f3ef4",
 				"slurpToMemory": true
 			}
 		},
-
-    "/pics/": {
-      "handler": "publish",
-      "handlerArgs": {
-        "blobRoot": "/bs-and-maybe-also-index/",
-        "cache": "/cache/",
-        "css": [
-          "pics.css"
-        ],
-        "goTemplate": "gallery.html",
-        "js": [
-          "pics.js"
-        ],
-        "rootName": "picsRoot",
-        "rootPermanode": [
-          "/sighelper/",
-          "sha1-046c6aae4ec8245dfe63edc4a2abb407824a4b5a"
-        ],
-        "scaledImage": {
-          "file": "/tmp/camli-cache/pics-thumbnails.kv",
-          "type": "kv"
-        },
-        "searchRoot": "/my-search/"
-      }
-    },
-    "/music/": {
-      "handler": "publish",
-      "handlerArgs": {
-        "blobRoot": "/bs-and-maybe-also-index/",
-        "cache": "/cache/",
-        "css": [
-          "pics.css"
-        ],
-        "goTemplate": "gallery.html",
-        "js": [
-          "pics.js"
-        ],
-        "rootName": "musicRoot",
-        "rootPermanode": [
-          "/sighelper/",
-          "sha1-999c6aae4ec8245dfe63edc4a2abb407824a4b5a"
-        ],
-        "scaledImage": {
-          "file": "/tmp/camli-cache/music-thumbnails.kv",
-          "type": "kv"
-        },
-        "searchRoot": "/my-search/"
-      }
-    },
+		"/pics/": {
+			"handler": "publish",
+			"handlerArgs": {
+				"blobRoot": "/bs-and-maybe-also-index/",
+				"cache": "/cache/",
+				"css": [
+					"pics.css"
+				],
+				"goTemplate": "gallery.html",
+				"js": [
+					"pics.js"
+				],
+				"rootName": "picsRoot",
+				"rootPermanode": [
+					"/sighelper/",
+					"sha1-046c6aae4ec8245dfe63edc4a2abb407824a4b5a"
+				],
+				"scaledImage": {
+					"file": "/tmp/camli-cache/pics-thumbnails.kv",
+					"type": "kv"
+				},
+				"searchRoot": "/my-search/"
+			}
+		},
 		"/setup/": {
 			"handler": "setup"
 		},
@@ -137,7 +143,7 @@
 					"file": "/tmp/blobs/sync-to-index-queue.kv",
 					"type": "kv"
 				},
-				"to": "/index-kv/"
+				"to": "/index/"
 			}
 		},
 		"/ui/": {
@@ -145,10 +151,10 @@
 			"handlerArgs": {
 				"cache": "/cache/",
 				"jsonSignRoot": "/sighelper/",
-                "publishRoots": [
-                    "/music/",
-                    "/pics/"
-                ],
+				"publishRoots": [
+					"/music/",
+					"/pics/"
+				],
 				"scaledImage": {
 					"file": "/tmp/blobs/thumbmeta.kv",
 					"type": "kv"
