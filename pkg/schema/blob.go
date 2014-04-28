@@ -248,7 +248,7 @@ func (s Share) IsExpired() bool {
 	return !t.IsZero() && clockNow().After(t)
 }
 
-// A StaticFile is a Blob representing a file or symlink (or FIFO or
+// A StaticFile is a Blob representing a file, symlink or FIFO (or
 // device file, when support for these is added)
 type StaticFile struct {
 	b *Blob
@@ -267,11 +267,16 @@ func (b *Blob) AsStaticFile() (sf StaticFile, ok bool) {
 	// Camlistore and change the implementation of StaticFile to
 	// reflect that.
 	t := b.ss.Type
-	if t == "file" || t == "symlink" {
+	if t == "file" || t == "symlink" || t == "FIFO" {
 		return StaticFile{b}, true
 	}
 
 	return
+}
+
+// A StaticFIFO is a StaticFile that is also a FIFO
+type StaticFIFO struct {
+	StaticFile
 }
 
 // A StaticSymlink is a StaticFile that is also a symbolic link.
@@ -294,6 +299,14 @@ func (sl StaticSymlink) SymlinkTargetString() string {
 func (sf StaticFile) AsStaticSymlink() (s StaticSymlink, ok bool) {
 	if sf.b.ss.Type == "symlink" {
 		return StaticSymlink{sf}, true
+	}
+
+	return
+}
+
+func (sf StaticFile) AsStaticFIFO() (sFIFO StaticFIFO, ok bool) {
+	if sf.b.ss.Type == "FIFO" {
+		return StaticFIFO{sf}, true
 	}
 
 	return

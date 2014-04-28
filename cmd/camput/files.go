@@ -395,7 +395,7 @@ func (up *Uploader) uploadNode(n *node) (*client.PutResult, error) {
 	case mode&os.ModeSocket != 0:
 		fallthrough
 	case mode&os.ModeNamedPipe != 0: // FIFO
-		fallthrough
+		bb.SetType("FIFO")
 	default:
 		return nil, fmt.Errorf("camput.files: unsupported file type %v for file %v", mode, n.fullPath)
 	case fi.IsDir():
