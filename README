@@ -8,6 +8,9 @@ already submitted for review for integration into the main Camlistore
 repo, but which are not yet upstream (At least, that is the basic
 idea).
 
+Some of the changes in this repo which are not yet upstream are:
+
+* FIFO support for camput (uploading) and camget (restoring).
 
 
 For more information about Camlistore, see:
