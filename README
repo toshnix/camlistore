@@ -11,6 +11,7 @@ idea).
 Some of the changes in this repo which are not yet upstream are:
 
 * FIFO support for camput (uploading) and camget (restoring).
+* Support for the use of scrypt and a passphrase for the encrypt blobserver.
 
 
 For more information about Camlistore, see:
