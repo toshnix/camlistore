@@ -49,6 +49,7 @@ const (
 	attrClientID     = "authClientID"
 	attrClientSecret = "authClientSecret"
 	attrImportRoot   = "importRoot"
+	attrImportAuto   = "importAuto" // => time.Duration value ("30m") or "" for off
 )
 
 // An Importer imports from a third-party site.
@@ -110,6 +111,19 @@ func newFromConfig(ld blobserver.Loader, cfg jsonconfig.Obj) (http.Handler, erro
 		importerBase: ld.BaseURL() + ld.MyPrefix(),
 		imp:          make(map[string]*importer),
 	}
+	var err error
+	h.tmpl, err = tmpl.Clone()
+	if err != nil {
+		return nil, err
+	}
+	h.tmpl = h.tmpl.Funcs(map[string]interface{}{
+		"bloblink": func(br blob.Ref) template.HTML {
+			if h.uiPrefix == "" {
+				return template.HTML(br.String())
+			}
+			return template.HTML(fmt.Sprintf("<a href=\"%s?b=%s\">%s</a>", h.uiPrefix, br, br))
+		},
+	})
 	for k, impl := range importers {
 		h.importers = append(h.importers, k)
 		var clientID, clientSecret string
@@ -213,6 +227,7 @@ func (rc *RunContext) RootNode() *Object { return rc.ia.root }
 // Host is the HTTP handler and state for managing all the importers
 // linked into the binary, even if they're not configured.
 type Host struct {
+	tmpl         *template.Template
 	importers    []string // sorted; e.g. dummy flickr foursquare picasa twitter
 	imp          map[string]*importer
 	baseURL      string
@@ -220,6 +235,7 @@ type Host struct {
 	target       blobserver.StatReceiver
 	search       *search.Handler
 	signer       *schema.Signer
+	uiPrefix     string // or empty if no UI handler
 
 	// client optionally specifies how to fetch external network
 	// resources.  If nil, http.DefaultClient is used.
@@ -228,6 +244,10 @@ type Host struct {
 }
 
 func (h *Host) InitHandler(hl blobserver.FindHandlerByTyper) error {
+	if prefix, _, err := hl.FindHandlerByType("ui"); err == nil {
+		h.uiPrefix = prefix
+	}
+
 	_, handler, err := hl.FindHandlerByType("root")
 	if err != nil || handler == nil {
 		return errors.New("importer requires a 'root' handler")
@@ -250,6 +270,7 @@ func (h *Host) InitHandler(hl blobserver.FindHandlerByTyper) error {
 	if h.signer == nil {
 		return errors.New("importer requires a 'jsonsign' handler")
 	}
+	go h.startPeriodicImporters()
 	return nil
 }
 
@@ -298,7 +319,7 @@ func (h *Host) serveImportersRoot(w http.ResponseWriter, r *http.Request) {
 	for _, v := range h.importers {
 		body.Importers = append(body.Importers, h.imp[v])
 	}
-	execTemplate(w, r, importersRootPage{
+	h.execTemplate(w, r, importersRootPage{
 		Title: "Importers",
 		Body:  body,
 	})
@@ -317,7 +338,7 @@ func (h *Host) serveImporter(w http.ResponseWriter, r *http.Request, imp *import
 		setup = setuper.AccountSetupHTML(h)
 	}
 
-	execTemplate(w, r, importerPage{
+	h.execTemplate(w, r, importerPage{
 		Title: "Importer - " + imp.Name(),
 		Body: importerBody{
 			Host:      h,
@@ -388,6 +409,51 @@ func (h *Host) serveImporterAccount(w http.ResponseWriter, r *http.Request, imp 
 		return
 	}
 	ia.ServeHTTP(w, r)
+}
+
+func (h *Host) startPeriodicImporters() {
+	res, err := h.search.Query(&search.SearchQuery{
+		Expression: "attr:camliNodeType:importerAccount",
+		Describe: &search.DescribeRequest{
+			Depth: 1,
+		},
+	})
+	if err != nil {
+		log.Printf("periodic importer search fail: %v", err)
+		return
+	}
+	if res.Describe == nil {
+		log.Printf("No describe response in search result")
+		return
+	}
+	for _, resBlob := range res.Blobs {
+		blob := resBlob.Blob
+		desBlob, ok := res.Describe.Meta[blob.String()]
+		if !ok || desBlob.Permanode == nil {
+			continue
+		}
+		attrs := desBlob.Permanode.Attr
+		if attrs.Get("camliNodeType") != "importerAccount" {
+			panic("Search result returned non-importerAccount")
+		}
+		impType := attrs.Get("importerType")
+		imp, ok := h.imp[impType]
+		if !ok {
+			continue
+		}
+		duration, err := time.ParseDuration(attrs.Get(attrImportAuto))
+		if duration == 0 || err != nil {
+			continue
+		}
+		ia, err := imp.account(blob)
+		if err != nil {
+			log.Printf("Can't load importer account %v for regular importing: %v", blob, err)
+			continue
+		}
+		log.Printf("Starting regular periodic %v import for account %v: %v", impType, blob, ia)
+		go ia.start()
+		// TODO: do it more than once on start-up.
+	}
 }
 
 // BaseURL returns the root of the whole server, without trailing
@@ -675,6 +741,15 @@ func (ia *importerAcct) delete() error {
 	return nil
 }
 
+func (ia *importerAcct) toggleAuto() error {
+	old := ia.acct.Attr(attrImportAuto)
+	var new string
+	if old == "" {
+		new = "30m" // TODO: configurable?
+	}
+	return ia.acct.SetAttrs(attrImportAuto, new)
+}
+
 func (ia *importerAcct) IsAccountReady() (bool, error) {
 	return ia.im.impl.IsAccountReady(ia.acct)
 }
@@ -692,6 +767,15 @@ func (ia *importerAcct) AccountLinkText() string {
 
 func (ia *importerAcct) AccountLinkSummary() string {
 	return ia.im.impl.SummarizeAccount(ia.acct)
+}
+
+func (ia *importerAcct) RefreshInterval() time.Duration {
+	ds := ia.acct.Attr(attrImportAuto)
+	if ds == "" {
+		return 0
+	}
+	d, _ := time.ParseDuration(ds)
+	return d
 }
 
 func (ia *importerAcct) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -723,7 +807,7 @@ func (ia *importerAcct) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		title += ia.acct.PermanodeRef().String()
 	}
-	execTemplate(w, r, acctPage{
+	ia.im.host.execTemplate(w, r, acctPage{
 		Title: title,
 		Body:  body,
 	})
@@ -742,6 +826,11 @@ func (ia *importerAcct) serveHTTPPost(w http.ResponseWriter, r *http.Request) {
 	case "login":
 		ia.setup(w, r)
 		return
+	case "toggleauto":
+		if err := ia.toggleAuto(); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
 	case "delete":
 		ia.stop() // can't hurt
 		if err := ia.delete(); err != nil {
@@ -886,6 +975,20 @@ func (o *Object) Attrs(attr string) []string {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	return o.attr[attr]
+}
+
+// ForeachAttr runs fn for each of the object's attributes & values.
+// There might be multiple values for the same attribute.
+// The internal lock is held while running, so no mutations should be
+// made or it will deadlock.
+func (o *Object) ForeachAttr(fn func(key, value string)) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	for k, vv := range o.attr {
+		for _, v := range vv {
+			fn(k, v)
+		}
+	}
 }
 
 // SetAttr sets the attribute key to value.

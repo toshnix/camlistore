@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,11 +43,20 @@ const (
 	authURL  = "https://foursquare.com/oauth2/authenticate"
 	tokenURL = "https://foursquare.com/oauth2/access_token"
 
+	// runCompleteVersion is a cache-busting version number of the
+	// importer code. It should be incremented whenever the
+	// behavior of this importer is updated enough to warrant a
+	// complete run.  Otherwise, if the importer runs to
+	// completion, this version number is recorded on the account
+	// permanode and subsequent importers can stop early.
+	runCompleteVersion = "1"
+
 	// Permanode attributes on account node:
-	acctAttrUserId      = "foursquareUserId"
-	acctAttrUserFirst   = "foursquareFirstName"
-	acctAttrUserLast    = "foursquareLastName"
-	acctAttrAccessToken = "oauthAccessToken"
+	acctAttrUserId           = "foursquareUserId"
+	acctAttrUserFirst        = "foursquareFirstName"
+	acctAttrUserLast         = "foursquareLastName"
+	acctAttrAccessToken      = "oauthAccessToken"
+	acctAttrCompletedVersion = "completedVersion"
 )
 
 func init() {
@@ -104,7 +114,11 @@ func (im *imp) AccountSetupHTML(host *importer.Host) string {
 // A run is our state for a given run of the importer.
 type run struct {
 	*importer.RunContext
-	im *imp
+	im          *imp
+	incremental bool // whether we've completed a run in the past
+
+	mu     sync.Mutex // guards anyErr
+	anyErr bool
 }
 
 func (r *run) token() string {
@@ -113,14 +127,33 @@ func (r *run) token() string {
 
 func (im *imp) Run(ctx *importer.RunContext) error {
 	r := &run{
-		RunContext: ctx,
-		im:         im,
+		RunContext:  ctx,
+		im:          im,
+		incremental: ctx.AccountNode().Attr(acctAttrCompletedVersion) == runCompleteVersion,
 	}
 
 	if err := r.importCheckins(); err != nil {
 		return err
 	}
+
+	r.mu.Lock()
+	anyErr := r.anyErr
+	r.mu.Unlock()
+
+	if !anyErr {
+		if err := r.AccountNode().SetAttrs(acctAttrCompletedVersion, runCompleteVersion); err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+func (r *run) errorf(format string, args ...interface{}) {
+	log.Printf(format, args...)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.anyErr = true
 }
 
 // urlFileRef slurps urlstr from the net, writes to a file and returns its
@@ -143,7 +176,7 @@ func (r *run) urlFileRef(urlstr, filename string) string {
 
 	fileRef, err := schema.WriteFileFromReader(r.Host.Target(), filename, res.Body)
 	if err != nil {
-		log.Printf("couldn't write file: %v", err)
+		r.errorf("couldn't write file: %v", err)
 		return ""
 	}
 
@@ -189,31 +222,39 @@ func (r *run) importCheckins() error {
 		}
 
 		sort.Sort(byCreatedAt(resp.Response.Checkins.Items))
+		sawOldItem := false
 		for _, checkin := range resp.Response.Checkins.Items {
 			placeNode, err := r.importPlace(placesNode, &checkin.Venue)
 			if err != nil {
-				log.Printf("Foursquare importer: error importing place %s %v", checkin.Venue.Id, err)
+				r.errorf("Foursquare importer: error importing place %s %v", checkin.Venue.Id, err)
 				continue
 			}
 
-			_, err = r.importCheckin(checkinsNode, checkin, placeNode.PermanodeRef())
+			_, dup, err := r.importCheckin(checkinsNode, checkin, placeNode.PermanodeRef())
 			if err != nil {
-				log.Printf("Foursquare importer: error importing checkin %s %v", checkin.Id, err)
+				r.errorf("Foursquare importer: error importing checkin %s %v", checkin.Id, err)
 				continue
 			}
 
-			err = r.importPhotos(placeNode)
+			if dup {
+				sawOldItem = true
+			}
+
+			err = r.importPhotos(placeNode, dup)
 			if err != nil {
-				log.Printf("Foursquare importer: error importing photos for checkin %s %v", checkin.Id, err)
+				r.errorf("Foursquare importer: error importing photos for checkin %s %v", checkin.Id, err)
 				continue
 			}
+		}
+		if sawOldItem && r.incremental {
+			break
 		}
 	}
 
 	return nil
 }
 
-func (r *run) importPhotos(placeNode *importer.Object) error {
+func (r *run) importPhotos(placeNode *importer.Object, checkinWasDup bool) error {
 	photosNode, err := placeNode.ChildPathObject("photos")
 	if err != nil {
 		return err
@@ -225,8 +266,24 @@ func (r *run) importPhotos(placeNode *importer.Object) error {
 		return err
 	}
 
+	nHave := 0
+	photosNode.ForeachAttr(func(key, value string) {
+		if strings.HasPrefix(key, "camliPath:") {
+			nHave++
+		}
+	})
+	nWant := 5
+	if checkinWasDup {
+		nWant = 1
+	}
+	if nHave >= nWant {
+		return nil
+	}
+
 	resp := photosList{}
-	if err := r.im.doAPI(r.Context, r.token(), &resp, "venues/"+placeNode.Attr("foursquareId")+"/photos", "limit", "10"); err != nil {
+	if err := r.im.doAPI(r.Context, r.token(), &resp,
+		"venues/"+placeNode.Attr("foursquareId")+"/photos",
+		"limit", strconv.Itoa(nWant)); err != nil {
 		return err
 	}
 
@@ -242,15 +299,18 @@ func (r *run) importPhotos(placeNode *importer.Object) error {
 		log.Printf("foursquare: importing %d photos for venue %s", len(need), placeNode.Attr("title"))
 		for _, photo := range need {
 			attr := "camliPath:" + photo.Id + filepath.Ext(photo.Suffix)
+			if photosNode.Attr(attr) != "" {
+				continue
+			}
 			url := photo.Prefix + "original" + photo.Suffix
 			log.Printf("foursquare: importing photo for venue %s: %s", placeNode.Attr("title"), url)
 			ref := r.urlFileRef(url, "")
 			if ref == "" {
-				log.Printf("Error slurping photo: %s", url)
+				r.errorf("Error slurping photo: %s", url)
 				continue
 			}
 			if err := photosNode.SetAttr(attr, ref); err != nil {
-				log.Printf("Error adding venue photo: %#v", err)
+				r.errorf("Error adding venue photo: %#v", err)
 			}
 		}
 	}
@@ -258,24 +318,23 @@ func (r *run) importPhotos(placeNode *importer.Object) error {
 	return nil
 }
 
-func (r *run) importCheckin(parent *importer.Object, checkin *checkinItem, placeRef blob.Ref) (*importer.Object, error) {
-	checkinNode, err := parent.ChildPathObject(checkin.Id)
+func (r *run) importCheckin(parent *importer.Object, checkin *checkinItem, placeRef blob.Ref) (checkinNode *importer.Object, dup bool, err error) {
+	checkinNode, err = parent.ChildPathObject(checkin.Id)
 	if err != nil {
-		return nil, err
+		return
 	}
 
 	title := fmt.Sprintf("Checkin at %s", checkin.Venue.Name)
-
+	dup = checkinNode.Attr("startDate") != ""
 	if err := checkinNode.SetAttrs(
 		"foursquareId", checkin.Id,
 		"foursquareVenuePermanode", placeRef.String(),
 		"camliNodeType", "foursquare.com:checkin",
 		"startDate", schema.RFC3339FromTime(time.Unix(checkin.CreatedAt, 0)),
 		"title", title); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-
-	return checkinNode, nil
+	return checkinNode, dup, nil
 }
 
 func (r *run) importPlace(parent *importer.Object, place *venueItem) (*importer.Object, error) {

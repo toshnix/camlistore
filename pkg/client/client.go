@@ -123,6 +123,8 @@ type Client struct {
 
 	log      *log.Logger // not nil
 	httpGate *syncutil.Gate
+
+	paramsOnly bool // config file and env vars are ignored.
 }
 
 const maxParallelHTTP = 5
@@ -139,19 +141,7 @@ func New(server string) *Client {
 		}
 		server = serverConf.Server
 	}
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			MaxIdleConnsPerHost: maxParallelHTTP,
-		},
-	}
-	return &Client{
-		server:     server,
-		httpClient: httpClient,
-		httpGate:   syncutil.NewGate(maxParallelHTTP),
-		haveCache:  noHaveCache{},
-		log:        log.New(os.Stderr, "", log.Ldate|log.Ltime),
-		authMode:   auth.None{},
-	}
+	return newFromParams(server, auth.None{})
 }
 
 func NewOrFail() *Client {
@@ -780,6 +770,21 @@ func (c *Client) doDiscovery() error {
 	return nil
 }
 
+// GetJSON sends a GET request to url, and unmarshals the returned
+// JSON response into data. The URL's host must match the client's
+// configured server.
+func (c *Client) GetJSON(url string, data interface{}) error {
+	if !strings.HasPrefix(url, c.discoRoot()) {
+		return fmt.Errorf("wrong URL (%q) for this server", url)
+	}
+	hreq := c.newRequest("GET", url)
+	resp, err := c.expect2XX(hreq)
+	if err != nil {
+		return err
+	}
+	return httputil.DecodeJSON(resp, data)
+}
+
 func (c *Client) newRequest(method, url string, body ...io.Reader) *http.Request {
 	var bodyR io.Reader
 	if len(body) > 0 {
@@ -1016,4 +1021,29 @@ func (c *Client) Close() error {
 		return cl.Close()
 	}
 	return nil
+}
+
+// NewFromParams returns a Client that uses the specified server base URL
+// and auth but does not use any on-disk config files or environment variables
+// for its configuration. It may still use the disk for caches.
+func NewFromParams(server string, mode auth.AuthMode) *Client {
+	cl := newFromParams(server, mode)
+	cl.paramsOnly = true
+	return cl
+}
+
+func newFromParams(server string, mode auth.AuthMode) *Client {
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConnsPerHost: maxParallelHTTP,
+		},
+	}
+	return &Client{
+		server:     server,
+		httpClient: httpClient,
+		httpGate:   syncutil.NewGate(maxParallelHTTP),
+		haveCache:  noHaveCache{},
+		log:        log.New(os.Stderr, "", log.Ldate|log.Ltime),
+		authMode:   mode,
+	}
 }

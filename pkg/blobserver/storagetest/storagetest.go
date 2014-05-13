@@ -264,30 +264,36 @@ func testStat(t *testing.T, enum <-chan blob.SizedRef, want []blob.SizedRef) {
 func testSalter(t *testing.T, salter blobserver.Salter) {
 	ok, err := salter.HasSalt()
 	if err != nil {
-		t.Fatalf("blobserver.Salter.HasSalt(): %v", err)
+		t.Errorf("blobserver.Salter.HasSalt(): %v", err)
+		return
 	}
 	if ok {
-		t.Fatalf("blobserver.Salter.HasSalt(): Expected false, got true")
+		t.Errorf("blobserver.Salter.HasSalt(): Expected false, got true")
+		return
 	}
 
 	data := "a967b8de7868db4513fbfd4eb9ce331f"
 	salt, err := hex.DecodeString(data)
 	if err != nil {
-		t.Fatalf("hex.DecodeString(): %v", err)
+		t.Errorf("hex.DecodeString(): %v", err)
+		return
 	}
 
 	err = salter.PutSalt(salt)
 	if err != nil {
-		t.Fatalf("blobserver.Salter.PutSalt(): %v", err)
+		t.Errorf("blobserver.Salter.PutSalt(): %v", err)
+		return
 	}
 
 	got, err := salter.GetSalt()
 	if err != nil {
-		t.Fatalf("blobserver.Salter.GetSalt(): %v", err)
+		t.Errorf("blobserver.Salter.GetSalt(): %v", err)
+		return
 	}
 
 	if !bytes.Equal(salt, got) {
-		t.Fatalf("blobserver.Salter.GetSalt(): Got salt different from put salt: Put %+v, Got: %+v", salt, got)
+		t.Errorf("blobserver.Salter.GetSalt(): Got salt different from put salt: Put %+v, Got: %+v", salt, got)
+		return
 	}
 
 }

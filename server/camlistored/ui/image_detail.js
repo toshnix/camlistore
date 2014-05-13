@@ -28,13 +28,10 @@ cam.ImageDetail = React.createClass({
 	PIGGY_HEIGHT: 62,
 
 	propTypes: {
-		backwardPiggy: false,
+		backwardPiggy: React.PropTypes.bool.isRequired,
 		height: React.PropTypes.number.isRequired,
-		oldURL: React.PropTypes.instanceOf(goog.Uri).isRequired,
-		onEscape: React.PropTypes.func.isRequired,
 		permanodeMeta: React.PropTypes.object,
 		resolvedMeta: React.PropTypes.object.isRequired,
-		searchURL: React.PropTypes.instanceOf(goog.Uri).isRequired,
 		width: React.PropTypes.number.isRequired,
 	},
 
@@ -47,21 +44,6 @@ cam.ImageDetail = React.createClass({
 
 	componentWillMount: function() {
 		this.componentWillReceiveProps(this.props, true);
-	},
-
-	componentDidMount: function() {
-		this.componentDidUpdate();
-	},
-
-	componentDidUpdate: function() {
-		var img = this.getImageRef_();
-		if (img) {
-			// This function gets called multiple times, but the DOM de-dupes listeners for us. Thanks DOM.
-			img.getDOMNode().addEventListener('load', this.onImgLoad_);
-			img.getDOMNode().addEventListener('error', function() {
-				console.error('Could not load image: %s', img.props.src);
-			})
-		}
 	},
 
 	render: function() {
@@ -78,7 +60,6 @@ cam.ImageDetail = React.createClass({
 			this.getGeneralProperties_(),
 			this.getFileishProperties_(),
 			this.getImageProperties_(),
-			this.getNavProperties_(),
 		]);
 	},
 
@@ -132,14 +113,6 @@ cam.ImageDetail = React.createClass({
 		]);
 	},
 
-	getNavProperties_: function() {
-		return cam.PropertySheet({key:'nav', title:'Elsewhere'}, [
-			React.DOM.a({key:'search-link', href:this.props.searchURL.toString(), onClick:this.props.onEscape}, 'Back to search'),
-			React.DOM.br(),
-			React.DOM.a({key:'old-link', href:this.props.oldURL.toString()}, 'Old (editable) UI'),
-		]);
-	},
-
 	getSinglePermanodeAttr_: function(name) {
 		return cam.permanodeUtils.getSingleAttr(this.props.permanodeMeta.permanode, name);
 	},
@@ -158,8 +131,8 @@ cam.ImageDetail = React.createClass({
 						'detail-view-img-loaded': this.state.imgHasLoaded
 					}),
 					// We want each image to have its own node in the DOM so that during the crossfade, we don't see the image jump to the next image's size.
-					key: this.getImageId_(),
-					ref: this.getImageId_(),
+					key: 'img' + this.props.resolvedMeta.blobRef,
+					onLoad: this.onImgLoad_,
 					src: this.thumber_.getSrc(this.imgSize_.height),
 					style: this.getCenteredProps_(this.imgSize_.width, this.imgSize_.height)
 				})
@@ -229,12 +202,37 @@ cam.ImageDetail = React.createClass({
 	getSidebarWidth_: function() {
 		return Math.max(this.props.width * 0.2, 300);
 	},
-
-	getImageRef_: function() {
-		return this.refs && this.refs[this.getImageId_()];
-	},
-
-	getImageId_: function() {
-		return 'img' + this.props.resolvedMeta.blobRef;
-	}
 });
+
+cam.ImageDetail.getAspect = function(blobref, searchSession) {
+	var rm = searchSession.getResolvedMeta(blobref);
+	var pm = searchSession.getMeta(blobref);
+
+	if (pm.camliType != 'permanode') {
+		pm = null;
+	}
+
+	return rm && rm.image ? new cam.ImageDetail.Aspect(rm, pm) : null;
+
+	// We don't handle camliContentImage like BlobItemImage.getHandler does because that only tells us what image to display in the search results. It doesn't actually make the permanode an image or anything.
+};
+
+cam.ImageDetail.Aspect = function(resolvedMeta, permanodeMeta) {
+	this.resolvedMeta_ = resolvedMeta;
+	this.permanodeMeta_ = permanodeMeta;
+};
+
+cam.ImageDetail.Aspect.prototype.getTitle = function() {
+	return 'Image';
+};
+
+// TODO(aa): Piggy should move into cam.Detail and use an onload handler to turn on/off.
+cam.ImageDetail.Aspect.prototype.createContent = function(size, backwardPiggy) {
+	return cam.ImageDetail({
+		backwardPiggy: backwardPiggy,
+		height: size.height,
+		permanodeMeta: this.permanodeMeta_,
+		resolvedMeta: this.resolvedMeta_,
+		width: size.width,
+	});
+};

@@ -24,15 +24,19 @@ goog.require('goog.object');
 goog.require('goog.string');
 goog.require('goog.Uri');
 
+goog.require('cam.BlobDetail');
 goog.require('cam.BlobItemContainerReact');
 goog.require('cam.BlobItemFoursquareContent');
 goog.require('cam.BlobItemGenericContent');
 goog.require('cam.BlobItemVideoContent');
 goog.require('cam.BlobItemImageContent');
 goog.require('cam.BlobItemDemoContent');
+goog.require('cam.ContainerDetail');
 goog.require('cam.DetailView');
+goog.require('cam.DirectoryDetail');
 goog.require('cam.Navigator');
 goog.require('cam.NavReact');
+goog.require('cam.PermanodeDetail');
 goog.require('cam.reactUtil');
 goog.require('cam.SearchSession');
 goog.require('cam.ServerConnection');
@@ -49,13 +53,21 @@ cam.IndexPage = React.createClass({
 		RAW: 'raw'
 	},
 
+	BLOB_ITEM_HANDLERS_: [
+		cam.BlobItemDemoContent.getHandler,
+		cam.BlobItemFoursquareContent.getHandler,
+		cam.BlobItemImageContent.getHandler,
+		cam.BlobItemVideoContent.getHandler,
+		cam.BlobItemGenericContent.getHandler // must be last
+	],
+
 	propTypes: {
 		availWidth: React.PropTypes.number.isRequired,
 		availHeight: React.PropTypes.number.isRequired,
 		config: React.PropTypes.object.isRequired,
-		eventTarget: cam.reactUtil.quacksLike({addEventListener:React.PropTypes.func.isRequired}).isRequired,
-		history: cam.reactUtil.quacksLike({pushState:React.PropTypes.func.isRequired, replaceState:React.PropTypes.func.isRequired, go:React.PropTypes.func.isRequired, state:React.PropTypes.object}).isRequired,
-		location: cam.reactUtil.quacksLike({href:React.PropTypes.string.isRequired, reload:React.PropTypes.func.isRequired}).isRequired,
+		eventTarget: React.PropTypes.shape({addEventListener:React.PropTypes.func.isRequired}).isRequired,
+		history: React.PropTypes.shape({pushState:React.PropTypes.func.isRequired, replaceState:React.PropTypes.func.isRequired, go:React.PropTypes.func.isRequired, state:React.PropTypes.object}).isRequired,
+		location: React.PropTypes.shape({href:React.PropTypes.string.isRequired, reload:React.PropTypes.func.isRequired}).isRequired,
 		serverConnection: React.PropTypes.instanceOf(cam.ServerConnection).isRequired,
 		timer: cam.NavReact.originalSpec.propTypes.timer,
 	},
@@ -224,9 +236,7 @@ cam.IndexPage = React.createClass({
 	},
 
 	handleNewPermanode_: function() {
-		this.props.serverConnection.createPermanode(function(p) {
-			this.navigator_.navigate(this.getDetailURL_(false, p));
-		}.bind(this));
+		this.props.serverConnection.createPermanode(this.getDetailURL_.bind(this));
 	},
 
 	handleShowSearchRoots_: function() {
@@ -324,19 +334,13 @@ cam.IndexPage = React.createClass({
 	},
 
 	handleDetailURL_: function(blobref) {
-		var m = this.searchSession_.getMeta(blobref);
-		var rm = this.searchSession_.getResolvedMeta(blobref);
-		return this.getDetailURL_(Boolean(rm && rm.image), m.blobRef);
+		return this.getDetailURL_(blobref);
 	},
 
-	getDetailURL_: function(newUI, blobref) {
+	getDetailURL_: function(blobref) {
 		var detailURL = this.state.currentURL.clone();
 		detailURL.setParameterValue('p', blobref);
-		if (newUI) {
-			detailURL.setParameterValue('newui', '1');
-		} else {
-			detailURL.removeParameter('newui');
-		}
+		detailURL.setParameterValue('newui', '1');
 		return detailURL;
 	},
 
@@ -423,13 +427,7 @@ cam.IndexPage = React.createClass({
 			key: 'blobitemcontainer',
 			ref: 'blobItemContainer',
 			detailURL: this.handleDetailURL_,
-			handlers: [
-				cam.BlobItemDemoContent.getHandler,
-				cam.BlobItemFoursquareContent.getHandler,
-				cam.BlobItemImageContent.getHandler,
-				cam.BlobItemVideoContent.getHandler,
-				cam.BlobItemGenericContent.getHandler // must be last
-			],
+			handlers: this.BLOB_ITEM_HANDLERS_,
 			history: this.props.history,
 			onSelectionChange: this.handleSelectionChange_,
 			searchSession: this.searchSession_,
@@ -476,21 +474,35 @@ cam.IndexPage = React.createClass({
 			searchURL.setParameterValue('q', this.state.currentURL.getParameterValue('q'));
 		}
 
-		var oldURL = this.baseURL_.clone();
-		oldURL.setParameterValue('p', this.state.currentURL.getParameterValue('p'));
-
 		return cam.DetailView({
 			key: 'detailview',
+			aspects: {
+				'image': cam.ImageDetail.getAspect,
+				'container': cam.ContainerDetail.getAspect.bind(null, this.handleDetailURL_, this.BLOB_ITEM_HANDLERS_, this.props.history, this.getChildSearchSession_, this.THUMBNAIL_SIZES_[this.state.thumbnailSizeIndex]),
+				'directory': cam.DirectoryDetail.getAspect.bind(null, this.baseURL_),
+				'permanode': cam.PermanodeDetail.getAspect.bind(null, this.baseURL_),
+				'blob': cam.BlobDetail.getAspect.bind(null, this.baseURL_),
+			},
 			blobref: this.state.currentURL.getParameterValue('p'),
 			history: this.props.history,
 			searchSession: this.searchSession_,
 			searchURL: searchURL,
-			oldURL: oldURL,
 			getDetailURL: this.handleDetailURL_,
 			navigator: this.navigator_,
 			keyEventTarget: this.props.eventTarget,
 			width: this.props.availWidth,
 			height: this.props.availHeight,
+		});
+	},
+
+	getChildSearchSession_: function(blobref) {
+		return new cam.SearchSession(this.props.serverConnection, this.baseURL_.clone(), {
+			permanode: {
+				relation: {
+					relation: 'parent',
+					any: { blobRefPrefix: blobref }
+				}
+			}
 		});
 	},
 
