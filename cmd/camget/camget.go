@@ -294,6 +294,14 @@ func smartFetch(src blob.Fetcher, targ string, br blob.Ref) error {
 			return errors.New("blob is not a symlink")
 		}
 		name := filepath.Join(targ, sl.FileName())
+
+		// os.Symlink does not work as expected on Windows. So
+		// skip the restoration of symlinks on Windows.
+		if runtime.GOOS == "windows" {
+			log.Printf("Skipping restoration of symbolic link: %s",
+				name)
+		}
+
 		if _, err := os.Lstat(name); err == nil {
 			if *flagVerbose {
 				log.Printf("Skipping creating symbolic link %s: A file with that name exists", name)
@@ -305,10 +313,6 @@ func smartFetch(src blob.Fetcher, targ string, br blob.Ref) error {
 			return errors.New("symlink without target")
 		}
 
-		// TODO (marete): The Go docs promise that everything
-		// in pkg os should work the same everywhere. Not true
-		// for os.Symlin() at the moment. See what to do for
-		// windows here.
 		err := os.Symlink(target, name)
 		// We won't call setFileMeta for a symlink because:
 		// the permissions of a symlink do not matter and Go's
