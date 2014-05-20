@@ -91,7 +91,7 @@ func TestCamgetSymlink(t *testing.T) {
 	}
 }
 
-// Test that `camget -o' can restore a FIFO correctly.
+// Test that `camget -o' can restore a fifo correctly.
 func TestCamgetFIFO(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.SkipNow()
@@ -113,7 +113,7 @@ func TestCamgetFIFO(t *testing.T) {
 	defer os.RemoveAll(tdir)
 	test.MustRunCmd(t, w.Cmd("camget", "-o", tdir, br))
 
-	// Ensure it is actually a FIFO
+	// Ensure it is actually a fifo
 	name := filepath.Join(tdir, filepath.Base(fifo))
 	fi, err := os.Lstat(name)
 	if err != nil {

@@ -53,6 +53,7 @@ import (
 	_ "camlistore.org/pkg/blobserver/google/drive"
 	_ "camlistore.org/pkg/blobserver/localdisk"
 	_ "camlistore.org/pkg/blobserver/mongo"
+	_ "camlistore.org/pkg/blobserver/proxycache"
 	_ "camlistore.org/pkg/blobserver/remote"
 	_ "camlistore.org/pkg/blobserver/replica"
 	_ "camlistore.org/pkg/blobserver/s3"
@@ -72,6 +73,7 @@ import (
 
 	// Importers:
 	_ "camlistore.org/pkg/importer/dummy"
+	_ "camlistore.org/pkg/importer/feed"
 	//_ "camlistore.org/pkg/importer/flickr"
 	_ "camlistore.org/pkg/importer/foursquare"
 	//_ "camlistore.org/pkg/importer/picasa"

@@ -27,7 +27,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"syscall"
 
 	"camlistore.org/pkg/blob"
 	"camlistore.org/pkg/buildinfo"
@@ -35,6 +34,7 @@ import (
 	"camlistore.org/pkg/client"
 	"camlistore.org/pkg/httputil"
 	"camlistore.org/pkg/index"
+	"camlistore.org/pkg/misc"
 	"camlistore.org/pkg/schema"
 )
 
@@ -315,7 +315,7 @@ func smartFetch(src blob.Fetcher, targ string, br blob.Ref) error {
 		// os.Chtimes always dereferences (does not act on the
 		// symlink but its target).
 		return err
-	case "FIFO":
+	case "fifo":
 		name := filepath.Join(targ, b.FileName())
 
 		if runtime.GOOS == "windows" {
@@ -338,10 +338,9 @@ func smartFetch(src blob.Fetcher, targ string, br blob.Ref) error {
 			return nil
 		}
 
-		err = syscall.Mkfifo(name, 0600)
+		err = misc.Mkfifo(name, 0600)
 		if err != nil {
-			fmt.Errorf("syscall.Mkfifo(): %v", err)
-			return err
+			return fmt.Errorf("%s: misc.Mkfifo(): %v", name, err)
 		}
 
 		if err := setFileMeta(name, b); err != nil {

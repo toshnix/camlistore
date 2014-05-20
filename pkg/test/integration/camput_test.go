@@ -22,13 +22,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 
+	"camlistore.org/pkg/misc"
 	"camlistore.org/pkg/test"
 )
 
-// mkTmpFIFO makes a FIFO in a temporary directory and returns the
+// mkTmpFIFO makes a fifo in a temporary directory and returns the
 // path it and a function to clean-up when done.
 func mkTmpFIFO(t *testing.T) (path string, cleanup func()) {
 	tdir, err := ioutil.TempDir("", "fifo-test-")
@@ -40,7 +40,7 @@ func mkTmpFIFO(t *testing.T) (path string, cleanup func()) {
 	}
 
 	path = filepath.Join(tdir, "fifo")
-	err = syscall.Mkfifo(path, 0660)
+	err = misc.Mkfifo(path, 0660)
 	if err != nil {
 		t.Fatalf("syscall.mkfifo(): %v", err)
 	}
@@ -48,7 +48,7 @@ func mkTmpFIFO(t *testing.T) (path string, cleanup func()) {
 	return
 }
 
-// Test that `camput' can upload FIFOs correctly.
+// Test that `camput' can upload fifos correctly.
 func TestCamputFIFO(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.SkipNow()
@@ -57,11 +57,11 @@ func TestCamputFIFO(t *testing.T) {
 	fifo, cleanup := mkTmpFIFO(t)
 	defer cleanup()
 
-	// Can we successfully upload a FIFO?
+	// Can we successfully upload a fifo?
 	w := test.GetWorld(t)
 	out := test.MustRunCmd(t, w.Cmd("camput", "file", fifo))
 
 	br := strings.Split(out, "\n")[0]
 	out = test.MustRunCmd(t, w.Cmd("camget", br))
-	t.Logf("Retrieved stored FIFO schema: %s", out)
+	t.Logf("Retrieved stored fifo schema: %s", out)
 }

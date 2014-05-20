@@ -92,7 +92,9 @@ type Symlink interface {
 	// .. TODO
 }
 
+// FIFO is the read-only interface to a "fifo" schema blob.
 type FIFO interface {
+	// .. TODO
 }
 
 // DirectoryEntry is a read-only interface to an entry in a (static)
@@ -109,7 +111,7 @@ type DirectoryEntry interface {
 	File() (File, error)           // if camliType is "file"
 	Directory() (Directory, error) // if camliType is "directory"
 	Symlink() (Symlink, error)     // if camliType is "symlink"
-	FIFO() (FIFO, error)           // if camliType is "FIFO"
+	FIFO() (FIFO, error)           // if camliType is "fifo"
 }
 
 // dirEntry is the default implementation of DirectoryEntry
@@ -180,7 +182,7 @@ func newDirectoryEntry(fetcher blob.Fetcher, ss *superset) (DirectoryEntry, erro
 		return nil, errors.New("ss.BlobRef was invalid")
 	}
 	switch ss.Type {
-	case "file", "directory", "symlink", "FIFO":
+	case "file", "directory", "symlink", "fifo":
 		// Okay
 	default:
 		return nil, fmt.Errorf("invalid DirectoryEntry camliType of %q", ss.Type)
@@ -191,7 +193,7 @@ func newDirectoryEntry(fetcher blob.Fetcher, ss *superset) (DirectoryEntry, erro
 
 // NewDirectoryEntryFromBlobRef takes a BlobRef and returns a
 //  DirectoryEntry if the BlobRef contains a type "file", "directory",
-//  "symlink" or "FIFO".
+//  "symlink", or "fifo".
 // TODO: "socket", "char", "block", probably.  later.
 func NewDirectoryEntryFromBlobRef(fetcher blob.Fetcher, blobRef blob.Ref) (DirectoryEntry, error) {
 	ss := new(superset)
@@ -358,49 +360,36 @@ func stringFromMixedArray(parts []interface{}) string {
 }
 
 // mixedArrayFromString is the inverse of stringFromMixedArray. It
-// splits a string to a series of alternating UTF-8 string segments
-// and non-UTF-8 []byte elements.
-func mixedArrayFromString(s string) (mixedName []interface{}) {
-	if utf8.ValidString(s) {
-		return append(mixedName, s)
+// splits a string to a series of either UTF-8 strings and non-UTF-8
+// bytes.
+func mixedArrayFromString(s string) (parts []interface{}) {
+	for len(s) > 0 {
+		if n := utf8StrLen(s); n > 0 {
+			parts = append(parts, s[:n])
+			s = s[n:]
+		} else {
+			parts = append(parts, s[0])
+			s = s[1:]
+		}
 	}
-
-	buf := []byte(s)
-	for len(buf) > 0 {
-		part, offset := nextStringOrByte(buf)
-		buf = buf[offset:]
-		mixedName = append(mixedName, part)
-	}
-
-	return
+	return parts
 }
 
-// nextStringOrByte returns either the longest UTF-8 string prefix or
-// the the first byte of b, if b does not contain a valid UTF-8
-// prefuix. consumed will be the length of the returned string or 1
-// when b does not contain a valid UTF-8 prefix.
-func nextStringOrByte(b []byte) (part interface{}, consumed int) {
-	n := 0
-	s := make([]byte, 0, 64)
-	for n < len(b) {
-		r, size := utf8.DecodeRune(b[n:])
-		if r == utf8.RuneError {
-			// If we already have a UTF8 string segment, return it
-			if len(s) > 0 {
-				return string(s), n
+// utf8StrLen returns how many prefix bytes of s are valid UTF-8.
+func utf8StrLen(s string) int {
+	for i, r := range s {
+		for r == utf8.RuneError {
+			// The RuneError value can be an error
+			// sentinel value (if it's size 1) or the same
+			// value encoded properly. Decode it to see if
+			// it's the 1 byte sentinel value.
+			_, size := utf8.DecodeRuneInString(s[i:])
+			if size == 1 {
+				return i
 			}
-			// Return the single byte and an offset of 1
-			return b[n], 1
 		}
-		n += size // We have consumed size bytes
-		rl := utf8.RuneLen(r)
-		for i := 0; i < rl; i++ {
-			s = append(s, 0)
-		}
-		utf8.EncodeRune(s[(len(s)-rl):], r)
 	}
-
-	return string(s), n
+	return len(s)
 }
 
 func (ss *superset) SumPartsSize() (size uint64) {
@@ -463,7 +452,7 @@ func (ss *superset) FileMode() os.FileMode {
 		// No extra bit.
 	case "symlink":
 		mode = mode | os.ModeSymlink
-	case "FIFO":
+	case "fifo":
 		mode = mode | os.ModeNamedPipe
 	}
 	return mode

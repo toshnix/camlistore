@@ -1,7 +1,7 @@
 Fields common to files, directories, symlinks and FIFOs.
 
 {"camliVersion": 1,
- "camliType": "...",  // one of "file", "directory", "symlink", "FIFO"
+ "camliType": "...",  // one of "file", "directory", "symlink", "fifo"
 
   // At most one of these may be set. (zero may be present only for large files' subranges,
   // represented as a tree of file schemas)  But exactly one of these is required for

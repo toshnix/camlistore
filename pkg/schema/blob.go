@@ -248,8 +248,8 @@ func (s Share) IsExpired() bool {
 	return !t.IsZero() && clockNow().After(t)
 }
 
-// A StaticFile is a Blob representing a file, symlink or FIFO (or
-// device file, when support for these is added)
+// A StaticFile is a Blob representing a file, symlink or fifo (or
+// socket or device file, when support for these is added)
 type StaticFile struct {
 	b *Blob
 }
@@ -263,18 +263,18 @@ func (sf StaticFile) FileName() string {
 // one. Otherwise, it returns false in the boolean parameter and the
 // zero value of StaticFile.
 func (b *Blob) AsStaticFile() (sf StaticFile, ok bool) {
-	// TODO (marete) Add support for FIFOs and device files to
+	// TODO (marete) Add support for device files to
 	// Camlistore and change the implementation of StaticFile to
 	// reflect that.
 	t := b.ss.Type
-	if t == "file" || t == "symlink" || t == "FIFO" {
+	if t == "file" || t == "symlink" || t == "fifo" {
 		return StaticFile{b}, true
 	}
 
 	return
 }
 
-// A StaticFIFO is a StaticFile that is also a FIFO
+// A StaticFIFO is a StaticFile that is also a fifo.
 type StaticFIFO struct {
 	StaticFile
 }
@@ -304,8 +304,11 @@ func (sf StaticFile) AsStaticSymlink() (s StaticSymlink, ok bool) {
 	return
 }
 
-func (sf StaticFile) AsStaticFIFO() (sFIFO StaticFIFO, ok bool) {
-	if sf.b.ss.Type == "FIFO" {
+// AsStaticFIFO returns the StatifFile as a StaticFIFO if the
+// StaticFile represents a fifo. Otherwise, it returns the zero value
+// of StaticFIFO and false.
+func (sf StaticFile) AsStaticFIFO() (fifo StaticFIFO, ok bool) {
+	if sf.b.ss.Type == "fifo" {
 		return StaticFIFO{sf}, true
 	}
 

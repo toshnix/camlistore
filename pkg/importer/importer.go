@@ -76,6 +76,17 @@ type Importer interface {
 
 	ServeSetup(w http.ResponseWriter, r *http.Request, ctx *SetupContext) error
 	ServeCallback(w http.ResponseWriter, r *http.Request, ctx *SetupContext)
+
+	// CallbackRequestAccount extracts the blobref of the importer account from
+	// the callback URL parameters of r. For example, it will be encoded as:
+	// For Twitter (OAuth1), in its own URL parameter: "acct=sha1-f2b0b7da718b97ce8c31591d8ed4645c777f3ef4"
+	// For Picasa: (OAuth2), in the OAuth2 "state" parameter: "state=acct:sha1-97911b1a5887eb5862d1c81666ba839fc1363ea1"
+	CallbackRequestAccount(r *http.Request) (acctRef blob.Ref, err error)
+
+	// CallbackURLParameters uses the input importer account blobRef to build
+	// and return the URL parameters string (including the prefixed "?"), that
+	// will be appended to the callback URL.
+	CallbackURLParameters(acctRef blob.Ref) string
 }
 
 // ImporterSetupHTMLer is an optional interface that may be implemented by
@@ -177,7 +188,8 @@ func (sc *SetupContext) Credentials() (clientID, clientSecret string, err error)
 }
 
 func (sc *SetupContext) CallbackURL() string {
-	return sc.Host.ImporterBaseURL() + sc.ia.im.name + "/callback?acct=" + sc.AccountNode.PermanodeRef().String()
+	return sc.Host.ImporterBaseURL() + sc.ia.im.name + "/callback" +
+		sc.ia.im.impl.CallbackURLParameters(sc.AccountNode.PermanodeRef())
 }
 
 // AccountURL returns the URL to an account of an importer
@@ -354,9 +366,13 @@ func (h *Host) serveImporterAcctCallback(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "invalid method", 400)
 		return
 	}
-	acctRef, ok := blob.Parse(r.FormValue("acct"))
-	if !ok {
-		http.Error(w, "missing 'acct' blobref param", 400)
+	acctRef, err := imp.impl.CallbackRequestAccount(r)
+	if err != nil {
+		httputil.ServeError(w, r, err)
+		return
+	}
+	if !acctRef.Valid() {
+		httputil.ServeError(w, r, errors.New("No valid blobref returned from CallbackRequestAccount(r)"))
 		return
 	}
 	ia, err := imp.account(acctRef)
@@ -433,7 +449,7 @@ func (h *Host) startPeriodicImporters() {
 			continue
 		}
 		attrs := desBlob.Permanode.Attr
-		if attrs.Get("camliNodeType") != "importerAccount" {
+		if attrs.Get(attrNodeType) != nodeTypeImporterAccount {
 			panic("Search result returned non-importerAccount")
 		}
 		impType := attrs.Get("importerType")
@@ -441,19 +457,39 @@ func (h *Host) startPeriodicImporters() {
 		if !ok {
 			continue
 		}
-		duration, err := time.ParseDuration(attrs.Get(attrImportAuto))
-		if duration == 0 || err != nil {
-			continue
-		}
 		ia, err := imp.account(blob)
 		if err != nil {
 			log.Printf("Can't load importer account %v for regular importing: %v", blob, err)
 			continue
 		}
-		log.Printf("Starting regular periodic %v import for account %v: %v", impType, blob, ia)
-		go ia.start()
-		// TODO: do it more than once on start-up.
+		go ia.maybeStart()
 	}
+}
+
+func (ia *importerAcct) maybeStart() {
+	acctObj, err := ia.im.host.ObjectFromRef(ia.acct.PermanodeRef())
+	if err != nil {
+		log.Printf("Error maybe starting %v: %v", ia.acct.PermanodeRef(), err)
+		return
+	}
+	duration, err := time.ParseDuration(acctObj.Attr(attrImportAuto))
+	if duration == 0 || err != nil {
+		return
+	}
+	ia.mu.Lock()
+	defer ia.mu.Unlock()
+	if ia.current != nil {
+		return
+	}
+	if ia.lastRunDone.After(time.Now().Add(-duration)) {
+		sleepFor := ia.lastRunDone.Add(duration).Sub(time.Now())
+		log.Printf("%v ran recently enough. Sleeping for %v.", ia, sleepFor)
+		time.AfterFunc(sleepFor, ia.maybeStart)
+		return
+	}
+
+	log.Printf("Starting regular periodic import for %v", ia)
+	go ia.start()
 }
 
 // BaseURL returns the root of the whole server, without trailing
@@ -731,6 +767,10 @@ type importerAcct struct {
 	lastRunDone  time.Time
 }
 
+func (ia *importerAcct) String() string {
+	return fmt.Sprintf("%v importer account, %v", ia.im.name, ia.acct.PermanodeRef())
+}
+
 func (ia *importerAcct) delete() error {
 	if err := ia.acct.SetAttrs(
 		attrNodeType, nodeTypeImporter+"-deleted",
@@ -873,12 +913,12 @@ func (ia *importerAcct) start() {
 	ia.stopped = false
 	ia.lastRunStart = time.Now()
 	go func() {
-		log.Printf("Starting importer %s: %s", ia.im.name, ia.AccountLinkSummary())
+		log.Printf("Starting %v: %s", ia, ia.AccountLinkSummary())
 		err := ia.im.impl.Run(rc)
 		if err != nil {
-			log.Printf("Importer %s error: %v", ia.im.name, err)
+			log.Printf("%v error: %v", ia, err)
 		} else {
-			log.Printf("Importer %s finished.", ia.im.name)
+			log.Printf("%v finished.", ia)
 		}
 		ia.mu.Lock()
 		defer ia.mu.Unlock()
@@ -886,6 +926,7 @@ func (ia *importerAcct) start() {
 		ia.stopped = false
 		ia.lastRunDone = time.Now()
 		ia.lastRunErr = err
+		go ia.maybeStart()
 	}()
 }
 

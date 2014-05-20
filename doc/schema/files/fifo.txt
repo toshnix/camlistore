@@ -1,7 +1,7 @@
-FIFO schema
+fifo schema
 
 {"camliVersion": 1,
- "camliType": "FIFO",
+ "camliType": "fifo",
 
   //
   // INCLUDE ALL REQUIRED & ANY OPTIONAL FIELDS FROM file-common.txt

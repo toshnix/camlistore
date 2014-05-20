@@ -24,11 +24,11 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"camlistore.org/pkg/blob"
+	"camlistore.org/pkg/misc"
 	. "camlistore.org/pkg/test/asserts"
 )
 
@@ -86,6 +86,47 @@ func TestSymlink(t *testing.T) {
 	t.Logf("Got json for symlink file: [%s]\n", json)
 }
 
+func TestUtf8StrLen(t *testing.T) {
+	tests := []struct {
+		in   string
+		want int
+	}{
+		{"", 0},
+		{"a", 1},
+		{"foo", 3},
+		{"Здравствуйте!", 25},
+		{"foo\x80", 3},
+		{"\x80foo", 0},
+	}
+	for _, tt := range tests {
+		got := utf8StrLen(tt.in)
+		if got != tt.want {
+			t.Errorf("utf8StrLen(%q) = %v; want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestMixedArrayFromString(t *testing.T) {
+	b80 := byte('\x80')
+	tests := []struct {
+		in   string
+		want []interface{}
+	}{
+		{"foo", []interface{}{"foo"}},
+		{"\x80foo", []interface{}{b80, "foo"}},
+		{"foo\x80foo", []interface{}{"foo", b80, "foo"}},
+		{"foo\x80", []interface{}{"foo", b80}},
+		{"\x80", []interface{}{b80}},
+		{"\x80\x80", []interface{}{b80, b80}},
+	}
+	for _, tt := range tests {
+		got := mixedArrayFromString(tt.in)
+		if !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("mixedArrayFromString(%q) = %#v; want %#v", tt.in, got, tt.want)
+		}
+	}
+}
+
 type mixPartsTest struct {
 	json, expected string
 }
@@ -112,25 +153,6 @@ func TestStringFromMixedArray(t *testing.T) {
 type mixedFromStringTest struct {
 	input    string
 	expected []interface{}
-}
-
-func TestMixedArrayFromString(t *testing.T) {
-	tests := []mixedFromStringTest{
-		{"brad", []interface{}{"brad"}},
-		{"Am\xe9lie.jpg", []interface{}{"Am", byte(233), "lie.jpg"}},
-		{"Shakin\xe2\xb4 Going\xe2\xb4 On.mp3",
-			[]interface{}{"Shakin", byte(0xe2), byte(0xb4),
-				" Going", byte(0xe2), byte(0xb4), " On.mp3"}},
-		{"Se\xf1orita", []interface{}{"Se", byte(0xf1), "orita"}},
-		{"\xf1ABC", []interface{}{byte(0xf1), "ABC"}},
-	}
-
-	for _, tt := range tests {
-		got := mixedArrayFromString(tt.input)
-		if !reflect.DeepEqual(tt.expected, got) {
-			t.Fatalf("Expected %+v, got %+v", tt.expected, got)
-		}
-	}
 }
 
 func TestRFC3339(t *testing.T) {
@@ -523,9 +545,9 @@ func TestStaticFIFO(t *testing.T) {
 	defer os.RemoveAll(tdir)
 
 	fifoPath := filepath.Join(tdir, "fifo")
-	err = syscall.Mkfifo(fifoPath, 0660)
+	err = misc.Mkfifo(fifoPath, 0660)
 	if err != nil {
-		t.Fatalf("syscall.Mkfifo(): %v", err)
+		t.Fatalf("misc.Mkfifo(): %v", err)
 	}
 
 	fi, err := os.Lstat(fifoPath)
@@ -534,10 +556,10 @@ func TestStaticFIFO(t *testing.T) {
 	}
 
 	bb := NewCommonFileMap(fifoPath, fi)
-	bb.SetType("FIFO")
+	bb.SetType("fifo")
 	bb.SetFileName(fifoPath)
 	blob := bb.Blob()
-	t.Logf("Got JSON for FIFO: %s\n", blob.JSON())
+	t.Logf("Got JSON for fifo: %s\n", blob.JSON())
 
 	sf, ok := blob.AsStaticFile()
 	if !ok {
