@@ -248,8 +248,8 @@ func (s Share) IsExpired() bool {
 	return !t.IsZero() && clockNow().After(t)
 }
 
-// A StaticFile is a Blob representing a file, symlink or fifo (or
-// socket or device file, when support for these is added)
+// A StaticFile is a Blob representing a file, symlink fifo or socket
+// (or device file, when support for these is added).
 type StaticFile struct {
 	b *Blob
 }
@@ -267,7 +267,7 @@ func (b *Blob) AsStaticFile() (sf StaticFile, ok bool) {
 	// Camlistore and change the implementation of StaticFile to
 	// reflect that.
 	t := b.ss.Type
-	if t == "file" || t == "symlink" || t == "fifo" {
+	if t == "file" || t == "symlink" || t == "fifo" || t == "socket" {
 		return StaticFile{b}, true
 	}
 
@@ -276,6 +276,11 @@ func (b *Blob) AsStaticFile() (sf StaticFile, ok bool) {
 
 // A StaticFIFO is a StaticFile that is also a fifo.
 type StaticFIFO struct {
+	StaticFile
+}
+
+// A StaticSocket is a StaticFile that is also a socket.
+type StaticSocket struct {
 	StaticFile
 }
 
@@ -310,6 +315,17 @@ func (sf StaticFile) AsStaticSymlink() (s StaticSymlink, ok bool) {
 func (sf StaticFile) AsStaticFIFO() (fifo StaticFIFO, ok bool) {
 	if sf.b.ss.Type == "fifo" {
 		return StaticFIFO{sf}, true
+	}
+
+	return
+}
+
+// AsSataticSocket returns the StaticFile as a StaticSocket if the
+// StaticFile represents a socket. Otherwise, it returns the zero
+// value of StaticSocket and false.
+func (sf StaticFile) AsStaticSocket() (ss StaticSocket, ok bool) {
+	if sf.b.ss.Type == "socket" {
+		return StaticSocket{sf}, true
 	}
 
 	return
